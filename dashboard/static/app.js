@@ -474,10 +474,11 @@
 
       const x1 = fanX, y1 = pp.y + CARD_H;
       const x2 = cp.x + CARD_W / 2, y2 = cp.y;
-      const midY = (y1 + y2) / 2;
+      const midY = Math.round((y1 + y2) / 2) + 0.5; // +0.5 讓 1px 線落在像素格上，不會被抗鋸齒糊成兩條淡線
       const style = edgeStyle(n.connection_type);
       const dashAttr = style.dash ? ` stroke-dasharray="${style.dash}"` : "";
-      svgInner += `<path d="M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}" fill="none" stroke="${style.color}" stroke-opacity="0.55" stroke-width="1.4"${dashAttr}/>`;
+      // 直線＋直角（下—橫—下），起點/終點精準對到卡片底邊中心／上緣中心
+      svgInner += `<path d="M${x1},${y1} L${x1},${midY} L${x2},${midY} L${x2},${y2}" fill="none" stroke="${style.color}" stroke-width="2.4"${dashAttr}/>`;
       if (n.port_label) {
         const lx = (x1 + x2) / 2, ly = midY;
         svgInner += `<text x="${lx}" y="${ly}" text-anchor="middle" dominant-baseline="middle" class="topo-edge-label" paint-order="stroke" stroke="var(--surface)" stroke-width="4">${escapeXml(n.port_label)}</text>`;

@@ -18,7 +18,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import os
+import re
 import sys
 import threading
 import time
@@ -47,6 +49,11 @@ STATIC_CONTENT_TYPES = {
 CARD_W = 172
 CARD_H = 62
 CARD_GAP = 16
+GRID_STEP_X = CARD_W + 48   # 卡片＋固定水平間距＝虛擬格線的欄寬
+GRID_STEP_Y = CARD_H + 90   # 卡片＋固定垂直間距（多留一點給直角連線的轉折跟 port 標籤）
+GRID_ORIGIN = 40.0
+FLOOR_GAP = 70.0
+LAYOUT_MARKER = "_netdiag_layout_v2"  # 存在檔案裡代表「這份資料已經被我們排過乾淨格線」
 NODE_FIELDS = ("name", "ip", "ip_display", "mac", "location", "type",
                "connection_type", "port_label", "floor")
 
@@ -156,35 +163,59 @@ def _to_simple_schema(nodes: list, base: dict) -> dict:
     return data
 
 
-def _auto_layout(nodes: list) -> None:
-    """替沒有座標的節點（例如手寫的簡易 topology.json）自動排版：depth 當列，同列依序排開。"""
-    by_id = {n["id"]: n for n in nodes}
-    depth_cache = {}
+def _floor_sort_key(floor: str) -> tuple:
+    if floor == "Uncategorized":
+        return (2, 0, floor)
+    m = re.match(r"^(\d+)", floor or "")
+    if m:
+        return (0, int(m.group(1)), floor)
+    return (1, 0, floor or "")
 
-    def depth_of(node_id, guard=0):
-        if node_id in depth_cache:
-            return depth_cache[node_id]
-        if guard > 20:
-            return 0
-        node = by_id.get(node_id)
-        if not node or not node.get("parent") or node["parent"] not in by_id:
-            depth_cache[node_id] = 0
-            return 0
-        d = depth_of(node["parent"], guard + 1) + 1
-        depth_cache[node_id] = d
-        return d
 
-    rows: dict = {}
+def _grid_layout_all(nodes: list) -> None:
+    """把所有節點依「樓層 → 樹狀深度（列）→ 目前水平位置排序（欄）」排進一份乾淨、間距固定的
+    虛擬格線，取代原始（可能東一個西一個、疏密不一）的座標。同一列裡的左右順序盡量沿用目前的
+    x 座標排序，所以重排不會把使用者拖曳調整過的相對順序打亂，只是把間距收整齊。
+    """
+    floors: dict = {}
     for n in nodes:
-        if n.get("x") is not None and n.get("y") is not None:
-            continue
-        d = depth_of(n["id"])
-        rows.setdefault(d, []).append(n)
+        floors.setdefault(n.get("floor") or "Uncategorized", []).append(n)
 
-    for depth, row_nodes in rows.items():
-        for i, n in enumerate(row_nodes):
-            n["x"] = 80 + i * 220
-            n["y"] = 80 + depth * 165
+    y_cursor = GRID_ORIGIN
+    for floor in sorted(floors.keys(), key=_floor_sort_key):
+        members = floors[floor]
+        by_id_local = {n["id"]: n for n in members}
+        depth_cache: dict = {}
+
+        def depth_of(node_id, guard=0):
+            if node_id in depth_cache:
+                return depth_cache[node_id]
+            if guard > 30:
+                return 0
+            node = by_id_local.get(node_id)
+            parent = node.get("parent") if node else None
+            if not node or not parent or parent not in by_id_local:
+                depth_cache[node_id] = 0
+                return 0
+            d = depth_of(parent, guard + 1) + 1
+            depth_cache[node_id] = d
+            return d
+
+        rows: dict = {}
+        for n in members:
+            rows.setdefault(depth_of(n["id"]), []).append(n)
+
+        max_depth = max(rows.keys(), default=0)
+        for depth in range(max_depth + 1):
+            row_nodes = rows.get(depth, [])
+            row_nodes.sort(key=lambda n: (
+                n["x"] if n.get("x") is not None else float("inf"), n["id"],
+            ))
+            for col, n in enumerate(row_nodes):
+                n["x"] = GRID_ORIGIN + col * GRID_STEP_X
+                n["y"] = y_cursor + depth * GRID_STEP_Y
+
+        y_cursor += (max_depth + 1) * GRID_STEP_Y + FLOOR_GAP
 
 
 def load_topology_full(path: str) -> tuple:
@@ -214,7 +245,18 @@ def load_topology_full(path: str) -> tuple:
             if n.get("parent") is not None and n["parent"] not in valid_ids:
                 n["parent"] = None  # 設定檔打錯字時退成根節點，不讓整份拓樸圖噴掉
 
-        _auto_layout(nodes)
+        already_gridded = bool(data.get(LAYOUT_MARKER))
+        if not already_gridded:
+            # 第一次讀到這份資料（可能是另一套工具原始匯出的、疏密不一的座標）：
+            # 整份重新排一次乾淨格線。之後存檔會蓋上標記，下次讀取就只補新節點的位置，
+            # 不會把使用者手動拖曳調整過的順序又整個打散重排。
+            for n in nodes:
+                n["x"] = None
+                n["y"] = None
+            _grid_layout_all(nodes)
+        elif any(n.get("x") is None or n.get("y") is None for n in nodes):
+            _grid_layout_all(nodes)  # 只有新節點缺座標，重排一次讓它補進格線裡
+
         return nodes, meta
     except (json.JSONDecodeError, OSError, KeyError) as exc:
         print(f"[警告] 讀取拓樸設定檔失敗（{path}）：{exc}，本輪拓樸圖略過。")
@@ -232,6 +274,7 @@ def save_topology(nodes: list, meta: dict) -> None:
         data = _to_scanner_schema(nodes, meta["raw"])
     else:
         data = _to_simple_schema(nodes, meta["raw"])
+    data[LAYOUT_MARKER] = True
     path = meta["path"]
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
@@ -241,48 +284,12 @@ def save_topology(nodes: list, meta: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# 拓樸圖：防重疊排版 ＋ 依拖曳位置判斷樓層
+# 拓樸圖：依拖曳位置判斷樓層（實際的防重疊改由 _grid_layout_all 用格線保證）
 # --------------------------------------------------------------------------
 
 def _rects_overlap(ax, ay, bx, by, gap) -> bool:
     return (ax < bx + CARD_W + gap and ax + CARD_W + gap > bx and
             ay < by + CARD_H + gap and ay + CARD_H + gap > by)
-
-
-def resolve_single(others: list, target: dict, gap: int = CARD_GAP, max_steps: int = 400) -> None:
-    """把 target 往外推，直到不再跟 others 裡任何一張卡片重疊（含固定間距）；只動 target，不動其他卡片。"""
-    import math
-    for _ in range(max_steps):
-        collided = None
-        for n in others:
-            if n is target or n["id"] == target["id"]:
-                continue
-            if _rects_overlap(target["x"], target["y"], n["x"], n["y"], gap):
-                collided = n
-                break
-        if not collided:
-            return
-        tx = target["x"] + CARD_W / 2
-        ty = target["y"] + CARD_H / 2
-        ox = collided["x"] + CARD_W / 2
-        oy = collided["y"] + CARD_H / 2
-        dx, dy = tx - ox, ty - oy
-        dist = math.hypot(dx, dy) or 1.0
-        dx, dy = dx / dist, dy / dist
-        target["x"] += dx * 14
-        target["y"] += dy * 14
-    # 推了 max_steps 次還沒喬開（極端密集），退而求其次找一個空位網格
-    _place_in_free_grid(others, target, gap)
-
-
-def _place_in_free_grid(others: list, target: dict, gap: int) -> None:
-    step_x, step_y = CARD_W + gap, CARD_H + gap
-    for row in range(60):
-        for col in range(20):
-            x, y = 40 + col * step_x, 40 + row * step_y
-            if not any(_rects_overlap(x, y, n["x"], n["y"], gap) for n in others if n["id"] != target["id"]):
-                target["x"], target["y"] = x, y
-                return
 
 
 def compute_floor_boxes(nodes: list, exclude_id: str = None) -> dict:
@@ -358,14 +365,8 @@ def upsert_node(nodes: list, body: dict) -> list:
         node["ip"] = body.get("ip") or None
         node["ip_display"] = node["ip"]
         node["floor"] = body.get("floor") or "Uncategorized"
-        if node["x"] is None or node["y"] is None:
-            node["x"] = 80.0
-            node["y"] = 80.0
         nodes.append(node)
-        others = [n for n in nodes if n["id"] != new_id]
-        resolve_single(others, node)
-        if not body.get("floor"):
-            node["floor"] = assign_floor_by_position(nodes, new_id)
+        _grid_layout_all(nodes)  # 新節點沒有座標時排最後一欄；有樓層/上層設備就直接歸位到對的格子
         return nodes
 
     if new_id != old_id and new_id in by_id:
@@ -376,6 +377,9 @@ def upsert_node(nodes: list, body: dict) -> list:
     check_id = new_id if new_id != old_id else old_id
     if new_parent and (new_parent == check_id or _has_cycle(nodes, old_id, new_parent)):
         raise TopologyError("上層設備不能是自己或自己的子節點（會形成循環）")
+
+    old_floor = existing.get("floor")
+    old_parent = existing.get("parent")
 
     if new_id != old_id:
         existing["id"] = new_id
@@ -389,14 +393,16 @@ def upsert_node(nodes: list, body: dict) -> list:
     if parent_given:  # 只有請求真的帶了 parent 欄位才更新，拖曳只帶 x/y 時不能把既有的上層關係洗掉
         existing["parent"] = new_parent
 
+    structure_changed = existing.get("floor") != old_floor or existing.get("parent") != old_parent
+
     moved = "x" in body and "y" in body and body["x"] is not None and body["y"] is not None
     if moved:
         existing["x"], existing["y"] = float(body["x"]), float(body["y"])
-        others = [n for n in nodes if n["id"] != existing["id"]]
-        resolve_single(others, existing)
-        existing["floor"] = assign_floor_by_position(nodes, existing["id"])
-    elif "floor" in body and body["floor"]:
-        existing["floor"] = body["floor"]
+        existing["floor"] = assign_floor_by_position(nodes, existing["id"])  # 用剛拖到的位置判斷樓層
+        _grid_layout_all(nodes)  # 再依（新樓層＋樹狀深度＋目前水平順序）收回乾淨格線
+    elif structure_changed:
+        # 在編輯視窗手動改了樓層或上層設備（不是拖曳），深度／分區跟著變了，一樣要重新收格線
+        _grid_layout_all(nodes)
 
     return nodes
 
@@ -408,8 +414,10 @@ def delete_node(nodes: list, node_id: str) -> list:
     parent = target.get("parent")
     for n in nodes:
         if n.get("parent") == node_id:
-            n["parent"] = parent  # 子節點過繼給被刪除節點的上層
-    return [n for n in nodes if n["id"] != node_id]
+            n["parent"] = parent  # 子節點過繼給被刪除節點的上層，深度會變，等下要重新收格線
+    remaining = [n for n in nodes if n["id"] != node_id]
+    _grid_layout_all(remaining)
+    return remaining
 
 
 def ping_topology(nodes: list) -> list:

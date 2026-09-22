@@ -21,32 +21,37 @@ def check(name, cond):
 
 
 # ---------------------------------------------------------------------
-# resolve_single：不能重疊、保持固定間距
+# _grid_layout_all：卡片對齊虛擬格線、彼此不重疊
 # ---------------------------------------------------------------------
 
-others = [
-    {"id": "A", "x": 100.0, "y": 100.0},
-    {"id": "B", "x": 300.0, "y": 100.0},
-]
-target = {"id": "C", "x": 105.0, "y": 105.0}  # 故意疊在 A 上面
-server.resolve_single(others, target)
-overlap_with_a = server._rects_overlap(target["x"], target["y"], others[0]["x"], others[0]["y"], server.CARD_GAP)
-overlap_with_b = server._rects_overlap(target["x"], target["y"], others[1]["x"], others[1]["y"], server.CARD_GAP)
-check("resolve_single 消除跟 A 的重疊", not overlap_with_a)
-check("resolve_single 沒有製造跟 B 的新重疊", not overlap_with_b)
 
-# 密集情境：一堆卡片擠在同一區，仍要保證最終無重疊
-dense = [{"id": f"n{i}", "x": 100.0, "y": 100.0} for i in range(8)]
-placed = []
-for n in dense:
-    server.resolve_single(placed, n)
-    placed.append(n)
-any_overlap = False
-for i in range(len(placed)):
-    for j in range(i + 1, len(placed)):
-        if server._rects_overlap(placed[i]["x"], placed[i]["y"], placed[j]["x"], placed[j]["y"], server.CARD_GAP):
-            any_overlap = True
-check("8 張卡片從同一點喬開後彼此都不重疊", not any_overlap)
+def is_on_grid(n):
+    dx = (n["x"] - server.GRID_ORIGIN) / server.GRID_STEP_X
+    return abs(dx - round(dx)) < 1e-6
+
+
+def any_overlap(nodes):
+    for i in range(len(nodes)):
+        for j in range(i + 1, len(nodes)):
+            if server._rects_overlap(nodes[i]["x"], nodes[i]["y"], nodes[j]["x"], nodes[j]["y"], 0):
+                return True
+    return False
+
+
+# 疏密不一、亂七八糟的原始座標，模擬另一套工具匯出的資料
+messy = [
+    {"id": "W1", "x": 10.0, "y": 5.0, "parent": None, "floor": "1F"},
+    {"id": "SW", "x": 999.0, "y": 812.0, "parent": "W1", "floor": "1F"},
+    {"id": "C1", "x": 3.0, "y": 3.0, "parent": "SW", "floor": "1F"},   # 跟 W1 疊在一起
+    {"id": "C2", "x": 4.0, "y": 4.0, "parent": "SW", "floor": "1F"},   # 也跟 W1、C1 疊在一起
+    {"id": "P1", "x": 500.0, "y": 500.0, "parent": None, "floor": "2F"},
+]
+server._grid_layout_all(messy)
+check("格線排版後彼此都不重疊", not any_overlap(messy))
+check("格線排版後每張卡片的 x 都對齊虛擬格線", all(is_on_grid(n) for n in messy))
+by_id_messy = {n["id"]: n for n in messy}
+check("同一層裡，父節點在子節點正上方那一列（y 較小）", by_id_messy["W1"]["y"] < by_id_messy["SW"]["y"] < by_id_messy["C1"]["y"])
+check("不同樓層的卡片 y 範圍不會疊在一起", by_id_messy["P1"]["y"] > by_id_messy["C1"]["y"])
 
 
 # ---------------------------------------------------------------------
@@ -82,9 +87,10 @@ nodes2 = server.upsert_node(nodes2, {"id": "cam1", "name": "新攝影機", "ip":
 check("新增設備成功、清單多一筆", len(nodes2) == 3 and any(n["id"] == "cam1" for n in nodes2))
 new_node = next(n for n in nodes2 if n["id"] == "cam1")
 check("新設備跟既有設備沒有重疊", not any(
-    server._rects_overlap(new_node["x"], new_node["y"], n["x"], n["y"], server.CARD_GAP)
+    server._rects_overlap(new_node["x"], new_node["y"], n["x"], n["y"], 0)
     for n in nodes2 if n["id"] != "cam1"
 ))
+check("新設備對齊虛擬格線", is_on_grid(new_node))
 
 # 重複 id 應該擋掉
 try:

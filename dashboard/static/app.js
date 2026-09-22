@@ -18,6 +18,36 @@
   const STATUS_LABEL = { good: "正常", warning: "留意", serious: "注意", critical: "嚴重" };
 
   // ---------------------------------------------------------------------
+  // 分頁切換
+  // ---------------------------------------------------------------------
+
+  function initTabs() {
+    const saved = localStorage.getItem("netdiag_page") || "topo";
+    showPage(saved);
+    for (const btn of document.querySelectorAll(".tab-btn")) {
+      btn.addEventListener("click", () => showPage(btn.dataset.page));
+    }
+  }
+
+  function showPage(name) {
+    for (const btn of document.querySelectorAll(".tab-btn")) {
+      btn.classList.toggle("active", btn.dataset.page === name);
+    }
+    for (const page of document.querySelectorAll(".page")) {
+      page.classList.toggle("active", page.id === `page-${name}`);
+    }
+    try { localStorage.setItem("netdiag_page", name); } catch (e) { /* 私密瀏覽模式讀不到就算了 */ }
+
+    // 切到「即時監控」時強制重繪圖表：canvas 在 display:none 底下量到的容器是 0x0，
+    // 畫布內部解析度會被設成 1x1，切回來顯示時如果不重繪，撐大的畫面只會看到糊成一片的色塊。
+    if (name === "monitor" && typeof latencyChart !== "undefined") {
+      latencyChart.render();
+      lossChart.render();
+      bandwidthChart.render();
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // 小工具
   // ---------------------------------------------------------------------
 
@@ -333,7 +363,9 @@
   const FLOOR_LABELS = { Uncategorized: "未分類區" };
   const CARD_W = 172;
   const CARD_H = 62;
-  const TOPO_SCALE = 0.5;
+  // 座標直接當螢幕像素用，不額外縮放——否則卡片寬高（CSS 固定 172x62px）跟縮小後的
+  // 座標間距會對不起來，明明沒重疊的卡片畫出來卻疊在一起（伺服器的防重疊運算是用未縮放的座標算的）。
+  const TOPO_SCALE = 1;
   const TOPO_PAD = 26;
 
   function floorSortKey(floor) {
@@ -470,10 +502,188 @@
       const ipText = ipBase ? (n.avg_ms != null ? `${ipBase} · ${fmt(n.avg_ms, 0)}ms` : ipBase) : (n.location || "—");
       meta.appendChild(el("span", { class: "topo-ip" }, [document.createTextNode(ipText)]));
       card.appendChild(meta);
+      attachDragHandlers(card, n);
       canvas.appendChild(card);
     }
 
     root.appendChild(canvas);
+  }
+
+  // ---------------------------------------------------------------------
+  // 拖曳（放開後打 API 存檔，畫面用伺服器回傳的權威結果重繪）
+  // ---------------------------------------------------------------------
+
+  let latestTopologyNodes = [];
+  let isDragging = false;
+  const CLICK_THRESHOLD_PX = 5;
+
+  function attachDragHandlers(card, node) {
+    card.addEventListener("pointerdown", (e) => {
+      if (e.button !== undefined && e.button !== 0) return;
+      e.preventDefault();
+      const startClientX = e.clientX;
+      const startClientY = e.clientY;
+      const startLeft = parseFloat(card.style.left) || 0;
+      const startTop = parseFloat(card.style.top) || 0;
+      let moved = false;
+      card.setPointerCapture(e.pointerId);
+      isDragging = true;
+
+      function onMove(ev) {
+        const dx = ev.clientX - startClientX;
+        const dy = ev.clientY - startClientY;
+        if (!moved && Math.hypot(dx, dy) > CLICK_THRESHOLD_PX) {
+          moved = true;
+          card.classList.add("dragging");
+        }
+        if (moved) {
+          card.style.left = `${startLeft + dx}px`;
+          card.style.top = `${startTop + dy}px`;
+        }
+      }
+
+      async function onUp(ev) {
+        card.removeEventListener("pointermove", onMove);
+        card.removeEventListener("pointerup", onUp);
+        card.removeEventListener("pointercancel", onUp);
+        card.classList.remove("dragging");
+        isDragging = false;
+
+        if (!moved) {
+          openNodeModal(node);
+          return;
+        }
+        const dx = ev.clientX - startClientX;
+        const dy = ev.clientY - startClientY;
+        const newX = (startLeft + dx) / TOPO_SCALE;
+        const newY = (startTop + dy) / TOPO_SCALE;
+        try {
+          const result = await postJson("/api/topology/node", {
+            id: node.id, old_id: node.id, x: newX, y: newY,
+          });
+          latestTopologyNodes = result.topology || [];
+          renderTopology(latestTopologyNodes);
+        } catch (err) {
+          alert(`移動失敗：${err.message}`);
+          renderTopology(latestTopologyNodes); // 失敗就退回原本位置
+        }
+      }
+
+      card.addEventListener("pointermove", onMove);
+      card.addEventListener("pointerup", onUp);
+      card.addEventListener("pointercancel", onUp);
+    });
+  }
+
+  async function postJson(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    let data = {};
+    try { data = await res.json(); } catch (e) { /* 空回應 */ }
+    if (!res.ok) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  // ---------------------------------------------------------------------
+  // 新增／編輯／刪除設備 modal
+  // ---------------------------------------------------------------------
+
+  let editingOldId = null;
+
+  function populateParentSelect(excludeId) {
+    const sel = document.getElementById("fParent");
+    sel.innerHTML = "";
+    sel.appendChild(el("option", { value: "" }, [document.createTextNode("（無，根節點）")]));
+    for (const n of latestTopologyNodes) {
+      if (n.id === excludeId) continue;
+      sel.appendChild(el("option", { value: n.id }, [document.createTextNode(`${n.name || n.id}（${n.id}）`)]));
+    }
+  }
+
+  function openNodeModal(node) {
+    const overlay = document.getElementById("nodeModalOverlay");
+    document.getElementById("modalError").hidden = true;
+    const isEdit = !!node;
+    editingOldId = isEdit ? node.id : null;
+
+    document.getElementById("nodeModalTitle").textContent = isEdit ? "編輯設備資訊" : "新增設備";
+    document.getElementById("deleteNodeBtn").hidden = !isEdit;
+
+    document.getElementById("fId").value = isEdit ? node.id : `device-${Date.now().toString(36)}`;
+    document.getElementById("fName").value = isEdit ? (node.name || "") : "";
+    document.getElementById("fIp").value = isEdit ? (node.ip_display || node.ip || "") : "";
+    document.getElementById("fMac").value = isEdit ? (node.mac || "") : "";
+    document.getElementById("fLocation").value = isEdit ? (node.location || "") : "";
+    document.getElementById("fFloor").value = isEdit ? (node.floor || "") : "Uncategorized";
+    document.getElementById("fType").value = isEdit && TOPO_ICONS[node.type] ? node.type : "unknown";
+    document.getElementById("fConnType").value = isEdit ? (node.connection_type || "") : "";
+    document.getElementById("fPortLabel").value = isEdit ? (node.port_label || "") : "";
+
+    populateParentSelect(isEdit ? node.id : null);
+    document.getElementById("fParent").value = isEdit && node.parent ? node.parent : "";
+
+    overlay.hidden = false;
+  }
+
+  function closeNodeModal() {
+    document.getElementById("nodeModalOverlay").hidden = true;
+  }
+
+  async function saveNodeFromModal() {
+    const body = {
+      id: document.getElementById("fId").value.trim(),
+      old_id: editingOldId,
+      name: document.getElementById("fName").value.trim(),
+      ip: document.getElementById("fIp").value.trim() || null,
+      mac: document.getElementById("fMac").value.trim(),
+      location: document.getElementById("fLocation").value.trim(),
+      floor: document.getElementById("fFloor").value.trim() || "Uncategorized",
+      type: document.getElementById("fType").value,
+      parent: document.getElementById("fParent").value || null,
+      connection_type: document.getElementById("fConnType").value,
+      port_label: document.getElementById("fPortLabel").value.trim(),
+    };
+    body.ip_display = body.ip;
+    try {
+      const result = await postJson("/api/topology/node", body);
+      latestTopologyNodes = result.topology || [];
+      renderTopology(latestTopologyNodes);
+      closeNodeModal();
+    } catch (err) {
+      const errEl = document.getElementById("modalError");
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+    }
+  }
+
+  async function deleteNodeFromModal() {
+    if (!editingOldId) return;
+    if (!confirm(`確定要刪除設備「${editingOldId}」嗎？它底下的子設備會過繼給它的上層設備。`)) return;
+    try {
+      const result = await postJson("/api/topology/node/delete", { id: editingOldId });
+      latestTopologyNodes = result.topology || [];
+      renderTopology(latestTopologyNodes);
+      closeNodeModal();
+    } catch (err) {
+      const errEl = document.getElementById("modalError");
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+    }
+  }
+
+  function initNodeModal() {
+    document.getElementById("addNodeBtn").addEventListener("click", () => openNodeModal(null));
+    document.getElementById("cancelNodeBtn").addEventListener("click", closeNodeModal);
+    document.getElementById("saveNodeBtn").addEventListener("click", saveNodeFromModal);
+    document.getElementById("deleteNodeBtn").addEventListener("click", deleteNodeFromModal);
+    document.getElementById("nodeModalOverlay").addEventListener("click", (e) => {
+      if (e.target.id === "nodeModalOverlay") closeNodeModal();
+    });
   }
 
   // ---------------------------------------------------------------------
@@ -512,7 +722,9 @@
 
   let consecutiveErrors = 0;
 
-  async function poll() {
+  async function poll(manual = false) {
+    const refreshBtn = document.getElementById("refreshBtn");
+    if (manual) refreshBtn.classList.add("spinning");
     try {
       const res = await fetch("/api/status", { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -528,12 +740,17 @@
       latencyChart.setData(data.history);
       lossChart.setData(data.history);
       bandwidthChart.setData(data.history);
-      if (data.topology) renderTopology(data.topology);
+      if (data.topology) {
+        latestTopologyNodes = data.topology;
+        if (!isDragging) renderTopology(latestTopologyNodes); // 拖曳中先不要被輪詢重繪蓋掉
+      }
     } catch (err) {
       consecutiveErrors += 1;
       if (consecutiveErrors >= 2) {
         document.getElementById("connError").hidden = false;
       }
+    } finally {
+      if (manual) setTimeout(() => refreshBtn.classList.remove("spinning"), 300);
     }
   }
 
@@ -542,6 +759,10 @@
     lossChart.render();
     bandwidthChart.render();
   });
+
+  initTabs();
+  initNodeModal();
+  document.getElementById("refreshBtn").addEventListener("click", () => poll(true));
 
   poll();
   setInterval(poll, POLL_MS);

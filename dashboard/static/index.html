@@ -14,9 +14,24 @@
     <span class="brand-title">家用網路醫生</span>
     <span class="brand-sub">NETDIAG // LIVE CONSOLE</span>
   </div>
-  <div class="status-pill" id="statusPill" data-status="good">
-    <span class="led"></span>
-    <span id="statusText">初始化中</span>
+
+  <nav class="tabs">
+    <button class="tab-btn" data-page="topo">網路架構</button>
+    <button class="tab-btn" data-page="monitor">即時監控</button>
+  </nav>
+
+  <div class="topbar-right">
+    <div class="status-pill" id="statusPill" data-status="good">
+      <span class="led"></span>
+      <span id="statusText">初始化中</span>
+    </div>
+    <div class="status-meta">
+      <span>上次更新 <span id="lastUpdate">--</span></span>
+      <button class="refresh-btn" id="refreshBtn" title="立即更新">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 11A8 8 0 1 0 18.6 16M20 5v6h-6"/></svg>
+        立即更新
+      </button>
+    </div>
   </div>
 </header>
 
@@ -54,75 +69,158 @@
     </div>
   </section>
 
-  <section class="panel chart-panel" aria-label="延遲趨勢">
-    <div class="panel-head">
-      <h2>延遲趨勢</h2>
-      <div class="legend">
-        <span class="legend-item"><i class="dot dot-gw"></i>路由器</span>
-        <span class="legend-item"><i class="dot dot-ext"></i>對外</span>
+  <!-- ============ 第 1 頁：網路架構 ============ -->
+  <section class="page" id="page-topo" style="grid-column:1/-1">
+    <section class="panel topology-panel">
+      <div class="panel-head">
+        <h2>網路架構</h2>
+        <div style="display:flex;align-items:center;gap:14px">
+          <span class="panel-hint" id="topoFileHint">拖曳卡片調整位置．點擊卡片編輯</span>
+          <button class="btn btn-small" id="addNodeBtn">＋ 新增設備</button>
+        </div>
       </div>
-    </div>
-    <div class="chart-wrap">
-      <canvas id="latencyChart"></canvas>
-      <div class="chart-tooltip" id="latencyTooltip" hidden></div>
-    </div>
-  </section>
-
-  <section class="panel chart-panel" aria-label="封包遺失率">
-    <div class="panel-head">
-      <h2>封包遺失率</h2>
-      <div class="legend">
-        <span class="legend-item"><i class="dot dot-gw"></i>路由器</span>
-        <span class="legend-item"><i class="dot dot-ext"></i>對外</span>
+      <div id="topologyRoot" class="topology-root"></div>
+      <div class="topo-legend">
+        <span class="topo-legend-item"><i class="legend-line" style="color:var(--series-gw)"></i>有線</span>
+        <span class="topo-legend-item"><i class="legend-line" style="color:var(--series-ext)"></i>PoE</span>
+        <span class="topo-legend-item"><i class="legend-line dashed" style="color:var(--series-wifi)"></i>WiFi</span>
+        <span class="topo-legend-item"><i class="dot" style="background:var(--status-good)"></i>線上</span>
+        <span class="topo-legend-item"><i class="dot" style="background:var(--status-critical)"></i>離線</span>
+        <span class="topo-legend-item"><i class="dot" style="background:var(--text-muted)"></i>無管理 IP</span>
       </div>
-    </div>
-    <div class="chart-wrap">
-      <canvas id="lossChart"></canvas>
-      <div class="chart-tooltip" id="lossTooltip" hidden></div>
-    </div>
+    </section>
   </section>
 
-  <section class="panel chart-panel" aria-label="即時頻寬趨勢">
-    <div class="panel-head">
-      <h2>頻寬趨勢</h2>
-      <div class="legend">
-        <span class="legend-item"><i class="dot dot-down"></i>下載</span>
-        <span class="legend-item"><i class="dot dot-up"></i>上傳</span>
-      </div>
-    </div>
-    <div class="chart-wrap">
-      <canvas id="bandwidthChart"></canvas>
-      <div class="chart-tooltip" id="bandwidthTooltip" hidden></div>
-    </div>
-  </section>
+  <!-- ============ 第 2 頁：即時監控 ============ -->
+  <section class="page" id="page-monitor" style="grid-column:1/-1">
+    <div class="grid" style="padding:0;max-width:none;margin:0">
 
-  <section class="panel issues-panel" aria-label="診斷結果">
-    <div class="panel-head"><h2>診斷結果</h2></div>
-    <ul id="issuesList" class="issues-list"></ul>
-  </section>
+      <section class="panel chart-panel" aria-label="延遲趨勢">
+        <div class="panel-head">
+          <h2>延遲趨勢</h2>
+          <div class="legend">
+            <span class="legend-item"><i class="dot dot-gw"></i>路由器</span>
+            <span class="legend-item"><i class="dot dot-ext"></i>對外</span>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="latencyChart"></canvas>
+          <div class="chart-tooltip" id="latencyTooltip" hidden></div>
+        </div>
+      </section>
 
-  <section class="panel topology-panel" aria-label="網路架構">
-    <div class="panel-head">
-      <h2>網路架構</h2>
-      <span class="panel-hint">設定檔：dashboard/topology.json</span>
-    </div>
-    <div id="topologyRoot" class="topology-root"></div>
-    <div class="topo-legend">
-      <span class="topo-legend-item"><i class="legend-line" style="color:var(--series-gw)"></i>有線</span>
-      <span class="topo-legend-item"><i class="legend-line" style="color:var(--series-ext)"></i>PoE</span>
-      <span class="topo-legend-item"><i class="legend-line dashed" style="color:var(--series-wifi)"></i>WiFi</span>
-      <span class="topo-legend-item"><i class="dot" style="background:var(--status-good)"></i>線上</span>
-      <span class="topo-legend-item"><i class="dot" style="background:var(--status-critical)"></i>離線</span>
-      <span class="topo-legend-item"><i class="dot" style="background:var(--text-muted)"></i>無管理 IP</span>
+      <section class="panel chart-panel" aria-label="封包遺失率">
+        <div class="panel-head">
+          <h2>封包遺失率</h2>
+          <div class="legend">
+            <span class="legend-item"><i class="dot dot-gw"></i>路由器</span>
+            <span class="legend-item"><i class="dot dot-ext"></i>對外</span>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="lossChart"></canvas>
+          <div class="chart-tooltip" id="lossTooltip" hidden></div>
+        </div>
+      </section>
+
+      <section class="panel chart-panel" aria-label="即時頻寬趨勢">
+        <div class="panel-head">
+          <h2>頻寬趨勢</h2>
+          <div class="legend">
+            <span class="legend-item"><i class="dot dot-down"></i>下載</span>
+            <span class="legend-item"><i class="dot dot-up"></i>上傳</span>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="bandwidthChart"></canvas>
+          <div class="chart-tooltip" id="bandwidthTooltip" hidden></div>
+        </div>
+      </section>
+
+      <section class="panel issues-panel" aria-label="診斷結果">
+        <div class="panel-head"><h2>診斷結果</h2></div>
+        <ul id="issuesList" class="issues-list"></ul>
+      </section>
+
     </div>
   </section>
 
 </main>
 
 <footer class="footbar">
-  <span>最後更新 <span id="lastUpdate">--</span></span>
+  <span>家用網路醫生 · 本機執行，資料不會上傳</span>
   <span id="connError" class="conn-error" hidden>連不上伺服器，重試中…</span>
 </footer>
+
+<!-- ============ 新增／編輯設備 Modal ============ -->
+<div class="modal-overlay" id="nodeModalOverlay" hidden>
+  <div class="modal-card">
+    <h3 id="nodeModalTitle">編輯設備資訊</h3>
+    <div class="field-row">
+      <label>設備編號</label>
+      <input type="text" id="fId" />
+    </div>
+    <div class="field-row">
+      <label>名稱</label>
+      <input type="text" id="fName" />
+    </div>
+    <div class="field-row">
+      <label>IP</label>
+      <input type="text" id="fIp" placeholder="例：192.168.1.50" />
+    </div>
+    <div class="field-row">
+      <label>MAC</label>
+      <input type="text" id="fMac" placeholder="例：aa:bb:cc:dd:ee:ff" />
+    </div>
+    <div class="field-row">
+      <label>位置</label>
+      <input type="text" id="fLocation" placeholder="例：客廳、2F 機櫃" />
+    </div>
+    <div class="field-row">
+      <label>樓層／區塊</label>
+      <input type="text" id="fFloor" placeholder="例：1F、2F、Uncategorized" />
+    </div>
+    <div class="field-row">
+      <label>設備類型</label>
+      <select id="fType">
+        <option value="router">router（路由器）</option>
+        <option value="modem">modem（數據機）</option>
+        <option value="switch">switch（交換器）</option>
+        <option value="poe_switch">poe_switch（PoE 交換器）</option>
+        <option value="nvr">nvr（錄影主機）</option>
+        <option value="ipcam">ipcam（攝影機）</option>
+        <option value="ap">ap（無線基地台）</option>
+        <option value="smart_home">smart_home（智慧家電）</option>
+        <option value="unknown">unknown（未知／終端裝置）</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <label>上層設備</label>
+      <select id="fParent"></select>
+    </div>
+    <div class="field-row">
+      <label>連線類型</label>
+      <select id="fConnType">
+        <option value="">（沿用/未指定）</option>
+        <option value="有線Cat6">有線 Cat6</option>
+        <option value="POE">PoE</option>
+        <option value="WIFI">WiFi</option>
+      </select>
+    </div>
+    <div class="field-row" id="portLabelRow">
+      <label>連線標籤（顯示在連線上的小字，可留空）</label>
+      <input type="text" id="fPortLabel" placeholder="例：SW1 - C1" />
+    </div>
+    <div class="modal-error" id="modalError" hidden></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="deleteNodeBtn" hidden>刪除設備</button>
+      <div style="display:flex;gap:8px;margin-left:auto">
+        <button class="btn" id="cancelNodeBtn">取消</button>
+        <button class="btn btn-primary" id="saveNodeBtn">儲存</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>

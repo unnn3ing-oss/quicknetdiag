@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import sys
@@ -43,6 +44,12 @@ STATIC_CONTENT_TYPES = {
     ".js": "application/javascript; charset=utf-8",
 }
 
+CARD_W = 172
+CARD_H = 62
+CARD_GAP = 16
+NODE_FIELDS = ("name", "ip", "ip_display", "mac", "location", "type",
+               "connection_type", "port_label", "floor")
+
 
 def overall_status(issues: list) -> str:
     worst = "good"
@@ -52,6 +59,10 @@ def overall_status(issues: list) -> str:
             worst = role
     return worst
 
+
+# --------------------------------------------------------------------------
+# 拓樸圖：讀取／格式轉換
+# --------------------------------------------------------------------------
 
 def _split_ip(raw) -> tuple:
     """把 "192.168.10.100:51630" 拆成 (拿去 ping 的 host, 顯示用的完整字串)。"""
@@ -79,6 +90,7 @@ def _from_scanner_schema(data: dict) -> list:
             "type": dev.get("device_type") or "default",
             "ip": host,
             "ip_display": ip_display,
+            "mac": dev.get("mac_address") or "",
             "location": dev.get("location") or "",
             "parent": edge.get("parent_mac") or None,
             "port_label": edge.get("port_label_src") or "",
@@ -88,6 +100,60 @@ def _from_scanner_schema(data: dict) -> list:
             "y": dev.get("custom_y"),
         })
     return nodes
+
+
+def _to_scanner_schema(nodes: list, base: dict) -> dict:
+    """把節點清單寫回另一套工具的 devices.json 格式，保留每台設備原本我們不管理的欄位。"""
+    data = copy.deepcopy(base)
+    old_devices = data.get("devices", {})
+    devices = {}
+    topology_map = {}
+    for n in nodes:
+        dev = dict(old_devices.get(n["id"], {}))
+        dev["id"] = n["id"]
+        dev["custom_name"] = n.get("name") or n["id"]
+        dev["ip_address"] = n.get("ip_display") or n.get("ip") or ""
+        dev["mac_address"] = n.get("mac") or ""
+        dev["location"] = n.get("location") or ""
+        dev["device_type"] = n.get("type") or "unknown"
+        dev["floor"] = n.get("floor") or "Uncategorized"
+        dev["custom_x"] = n.get("x")
+        dev["custom_y"] = n.get("y")
+        devices[n["id"]] = dev
+        if n.get("parent"):
+            label = n.get("port_label") or f"{n['parent']} - {n['id']}"
+            topology_map[n["id"]] = {
+                "parent_mac": n["parent"],
+                "child_mac": n["id"],
+                "connection_type": n.get("connection_type") or "",
+                "port_label_src": label,
+                "port_label_tgt": label,
+            }
+    data["devices"] = devices
+    data["topology"] = topology_map
+    return data
+
+
+def _to_simple_schema(nodes: list, base: dict) -> dict:
+    data = copy.deepcopy(base)
+    clean = []
+    for n in nodes:
+        clean.append({
+            "id": n["id"],
+            "name": n.get("name") or n["id"],
+            "type": n.get("type") or "default",
+            "ip": n.get("ip"),
+            "mac": n.get("mac") or "",
+            "location": n.get("location") or "",
+            "parent": n.get("parent"),
+            "port_label": n.get("port_label") or "",
+            "connection_type": n.get("connection_type") or "",
+            "floor": n.get("floor") or "住家",
+            "x": n.get("x"),
+            "y": n.get("y"),
+        })
+    data["nodes"] = clean
+    return data
 
 
 def _auto_layout(nodes: list) -> None:
@@ -121,23 +187,27 @@ def _auto_layout(nodes: list) -> None:
             n["y"] = 80 + depth * 165
 
 
-def load_topology(path: str) -> list:
+def load_topology_full(path: str) -> tuple:
+    """回傳 (nodes, meta)。meta 保留原始檔案結構與格式，供回寫使用。"""
     if not os.path.exists(path):
-        return []
+        return [], {"schema": "simple", "raw": {"nodes": []}, "path": path}
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         if "devices" in data and "topology" in data:
             nodes = _from_scanner_schema(data)
+            meta = {"schema": "scanner", "raw": data, "path": path}
         else:
             nodes = data.get("nodes", [])
             for n in nodes:
                 n.setdefault("ip_display", n.get("ip"))
+                n.setdefault("mac", "")
                 n.setdefault("floor", "住家")
                 n.setdefault("port_label", "")
                 n.setdefault("connection_type", "")
                 n.setdefault("location", "")
+            meta = {"schema": "simple", "raw": data, "path": path}
 
         valid_ids = {n["id"] for n in nodes}
         for n in nodes:
@@ -145,10 +215,201 @@ def load_topology(path: str) -> list:
                 n["parent"] = None  # 設定檔打錯字時退成根節點，不讓整份拓樸圖噴掉
 
         _auto_layout(nodes)
-        return nodes
+        return nodes, meta
     except (json.JSONDecodeError, OSError, KeyError) as exc:
         print(f"[警告] 讀取拓樸設定檔失敗（{path}）：{exc}，本輪拓樸圖略過。")
-        return []
+        return [], {"schema": "simple", "raw": {"nodes": []}, "path": path}
+
+
+def load_topology(path: str) -> list:
+    nodes, _ = load_topology_full(path)
+    return nodes
+
+
+def save_topology(nodes: list, meta: dict) -> None:
+    """依原始格式把節點清單寫回檔案（覆寫），只動我們管理的欄位，其餘保留。原子寫入避免寫壞檔案。"""
+    if meta["schema"] == "scanner":
+        data = _to_scanner_schema(nodes, meta["raw"])
+    else:
+        data = _to_simple_schema(nodes, meta["raw"])
+    path = meta["path"]
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+    meta["raw"] = data
+
+
+# --------------------------------------------------------------------------
+# 拓樸圖：防重疊排版 ＋ 依拖曳位置判斷樓層
+# --------------------------------------------------------------------------
+
+def _rects_overlap(ax, ay, bx, by, gap) -> bool:
+    return (ax < bx + CARD_W + gap and ax + CARD_W + gap > bx and
+            ay < by + CARD_H + gap and ay + CARD_H + gap > by)
+
+
+def resolve_single(others: list, target: dict, gap: int = CARD_GAP, max_steps: int = 400) -> None:
+    """把 target 往外推，直到不再跟 others 裡任何一張卡片重疊（含固定間距）；只動 target，不動其他卡片。"""
+    import math
+    for _ in range(max_steps):
+        collided = None
+        for n in others:
+            if n is target or n["id"] == target["id"]:
+                continue
+            if _rects_overlap(target["x"], target["y"], n["x"], n["y"], gap):
+                collided = n
+                break
+        if not collided:
+            return
+        tx = target["x"] + CARD_W / 2
+        ty = target["y"] + CARD_H / 2
+        ox = collided["x"] + CARD_W / 2
+        oy = collided["y"] + CARD_H / 2
+        dx, dy = tx - ox, ty - oy
+        dist = math.hypot(dx, dy) or 1.0
+        dx, dy = dx / dist, dy / dist
+        target["x"] += dx * 14
+        target["y"] += dy * 14
+    # 推了 max_steps 次還沒喬開（極端密集），退而求其次找一個空位網格
+    _place_in_free_grid(others, target, gap)
+
+
+def _place_in_free_grid(others: list, target: dict, gap: int) -> None:
+    step_x, step_y = CARD_W + gap, CARD_H + gap
+    for row in range(60):
+        for col in range(20):
+            x, y = 40 + col * step_x, 40 + row * step_y
+            if not any(_rects_overlap(x, y, n["x"], n["y"], gap) for n in others if n["id"] != target["id"]):
+                target["x"], target["y"] = x, y
+                return
+
+
+def compute_floor_boxes(nodes: list, exclude_id: str = None) -> dict:
+    boxes: dict = {}
+    for n in nodes:
+        if n["id"] == exclude_id:
+            continue
+        f = n.get("floor") or "Uncategorized"
+        x0, y0, x1, y1 = boxes.get(f, (float("inf"), float("inf"), float("-inf"), float("-inf")))
+        boxes[f] = (
+            min(x0, n["x"]), min(y0, n["y"]),
+            max(x1, n["x"] + CARD_W), max(y1, n["y"] + CARD_H),
+        )
+    return boxes
+
+
+def assign_floor_by_position(nodes: list, moved_id: str) -> str:
+    """依卡片目前座標，判斷離哪個樓層區塊最近（落在區塊內距離算 0），回傳該樓層名稱。"""
+    target = next((n for n in nodes if n["id"] == moved_id), None)
+    if target is None:
+        return "Uncategorized"
+    boxes = compute_floor_boxes(nodes, exclude_id=moved_id)
+    if not boxes:
+        return target.get("floor") or "Uncategorized"
+    cx, cy = target["x"] + CARD_W / 2, target["y"] + CARD_H / 2
+    best_floor, best_dist = target.get("floor"), float("inf")
+    for floor, (x0, y0, x1, y1) in boxes.items():
+        dx = max(x0 - cx, 0, cx - x1)
+        dy = max(y0 - cy, 0, cy - y1)
+        dist = dx * dx + dy * dy
+        if dist < best_dist:
+            best_dist, best_floor = dist, floor
+    return best_floor
+
+
+# --------------------------------------------------------------------------
+# 拓樸圖：新增／編輯／刪除
+# --------------------------------------------------------------------------
+
+class TopologyError(Exception):
+    pass
+
+
+def _has_cycle(nodes: list, node_id: str, new_parent: str) -> bool:
+    by_id = {n["id"]: n for n in nodes}
+    cur = new_parent
+    guard = 0
+    while cur is not None and guard < 100:
+        if cur == node_id:
+            return True
+        cur = by_id.get(cur, {}).get("parent")
+        guard += 1
+    return False
+
+
+def upsert_node(nodes: list, body: dict) -> list:
+    new_id = (body.get("id") or "").strip()
+    if not new_id:
+        raise TopologyError("設備編號不能空白")
+    old_id = (body.get("old_id") or new_id).strip()
+
+    by_id = {n["id"]: n for n in nodes}
+    existing = by_id.get(old_id)
+    is_new = existing is None
+
+    if is_new:
+        if new_id in by_id:
+            raise TopologyError(f"設備編號「{new_id}」已經存在")
+        node = {"id": new_id, "x": body.get("x"), "y": body.get("y"),
+                "parent": body.get("parent") or None}
+        for k in NODE_FIELDS:
+            node[k] = body.get(k) or ""
+        node["ip"] = body.get("ip") or None
+        node["ip_display"] = node["ip"]
+        node["floor"] = body.get("floor") or "Uncategorized"
+        if node["x"] is None or node["y"] is None:
+            node["x"] = 80.0
+            node["y"] = 80.0
+        nodes.append(node)
+        others = [n for n in nodes if n["id"] != new_id]
+        resolve_single(others, node)
+        if not body.get("floor"):
+            node["floor"] = assign_floor_by_position(nodes, new_id)
+        return nodes
+
+    if new_id != old_id and new_id in by_id:
+        raise TopologyError(f"設備編號「{new_id}」已經存在")
+
+    parent_given = "parent" in body
+    new_parent = (body.get("parent") or None) if parent_given else existing.get("parent")
+    check_id = new_id if new_id != old_id else old_id
+    if new_parent and (new_parent == check_id or _has_cycle(nodes, old_id, new_parent)):
+        raise TopologyError("上層設備不能是自己或自己的子節點（會形成循環）")
+
+    if new_id != old_id:
+        existing["id"] = new_id
+        for n in nodes:
+            if n.get("parent") == old_id:
+                n["parent"] = new_id
+
+    for k in NODE_FIELDS:
+        if k in body:
+            existing[k] = body[k]
+    if parent_given:  # 只有請求真的帶了 parent 欄位才更新，拖曳只帶 x/y 時不能把既有的上層關係洗掉
+        existing["parent"] = new_parent
+
+    moved = "x" in body and "y" in body and body["x"] is not None and body["y"] is not None
+    if moved:
+        existing["x"], existing["y"] = float(body["x"]), float(body["y"])
+        others = [n for n in nodes if n["id"] != existing["id"]]
+        resolve_single(others, existing)
+        existing["floor"] = assign_floor_by_position(nodes, existing["id"])
+    elif "floor" in body and body["floor"]:
+        existing["floor"] = body["floor"]
+
+    return nodes
+
+
+def delete_node(nodes: list, node_id: str) -> list:
+    target = next((n for n in nodes if n["id"] == node_id), None)
+    if target is None:
+        raise TopologyError("找不到這個設備")
+    parent = target.get("parent")
+    for n in nodes:
+        if n.get("parent") == node_id:
+            n["parent"] = parent  # 子節點過繼給被刪除節點的上層
+    return [n for n in nodes if n["id"] != node_id]
 
 
 def ping_topology(nodes: list) -> list:
@@ -174,9 +435,14 @@ def ping_topology(nodes: list) -> list:
     return results
 
 
+# --------------------------------------------------------------------------
+# 應用狀態
+# --------------------------------------------------------------------------
+
 class AppState:
     def __init__(self, history_cap: int, topology_path: str):
         self.lock = threading.Lock()
+        self.topology_lock = threading.Lock()  # 保護拓樸檔案的讀取/寫入，避免背景輪詢跟編輯 API 互相干擾
         self.history = deque(maxlen=history_cap)
         self.current = None
         self.topology = []
@@ -265,6 +531,10 @@ class AppState:
             if topology:
                 self.topology = topology
 
+    def set_topology(self, topology: list) -> None:
+        with self.lock:
+            self.topology = topology
+
     def snapshot_json(self) -> dict:
         with self.lock:
             elapsed = max((datetime.now() - self.started_at).total_seconds(), 1e-9)
@@ -283,6 +553,15 @@ class AppState:
                     "uptime_pct": uptime_pct,
                 },
             }
+
+
+def refresh_topology(state: AppState) -> list:
+    """重新讀檔＋ping，更新 state.topology，回傳最新節點清單（給編輯 API 當回應用）。"""
+    with state.topology_lock:
+        nodes, _meta = load_topology_full(state.topology_path)
+        topology = ping_topology(nodes)
+    state.set_topology(topology)
+    return topology
 
 
 def monitor_loop(state: AppState, gateway_ip, ext_target, interval_s: float,
@@ -312,7 +591,8 @@ def monitor_loop(state: AppState, gateway_ip, ext_target, interval_s: float,
 
         topology = []
         if topology_every > 0 and (round_no - 1) % topology_every == 0:
-            nodes = load_topology(state.topology_path)
+            with state.topology_lock:
+                nodes, _meta = load_topology_full(state.topology_path)
             topology = ping_topology(nodes)
 
         down_mbps = up_mbps = None
@@ -382,6 +662,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_json_body(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length)
+        return json.loads(raw.decode("utf-8"))
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/api/status":
@@ -396,6 +683,55 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(os.path.join(STATIC_DIR, safe_name))
             return
         self.send_error(404, "Not Found")
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        try:
+            body = self._read_json_body()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json({"error": "請求格式錯誤"}, status=400)
+            return
+
+        if path == "/api/topology/node":
+            self._handle_upsert(body)
+            return
+        if path == "/api/topology/node/delete":
+            self._handle_delete(body)
+            return
+        self.send_error(404, "Not Found")
+
+    def _handle_upsert(self, body: dict) -> None:
+        state = self.state
+        try:
+            with state.topology_lock:
+                nodes, meta = load_topology_full(state.topology_path)
+                nodes = upsert_node(nodes, body)
+                save_topology(nodes, meta)
+        except TopologyError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+            return
+        except OSError as exc:
+            self._send_json({"error": f"寫入檔案失敗：{exc}"}, status=500)
+            return
+        topology = refresh_topology(state)
+        self._send_json({"topology": topology})
+
+    def _handle_delete(self, body: dict) -> None:
+        state = self.state
+        node_id = (body.get("id") or "").strip()
+        try:
+            with state.topology_lock:
+                nodes, meta = load_topology_full(state.topology_path)
+                nodes = delete_node(nodes, node_id)
+                save_topology(nodes, meta)
+        except TopologyError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+            return
+        except OSError as exc:
+            self._send_json({"error": f"寫入檔案失敗：{exc}"}, status=500)
+            return
+        topology = refresh_topology(state)
+        self._send_json({"topology": topology})
 
 
 def main() -> None:
@@ -413,7 +749,8 @@ def main() -> None:
     parser.add_argument("--topology-every", type=int, default=1,
                          help="每幾輪重新量測一次拓樸圖節點狀態，預設每輪都測")
     parser.add_argument("--topology-file", type=str, default=DEFAULT_TOPOLOGY_PATH,
-                         help="拓樸圖設定檔路徑，預設 dashboard/topology.json")
+                         help="拓樸圖設定檔路徑，預設 dashboard/topology.json；"
+                              "在網頁上新增/編輯/刪除/拖曳設備都會直接寫回這個檔案")
     parser.add_argument("--csv", type=str, default=None, help="同時把每輪量測附加寫入這個 CSV 檔")
     args = parser.parse_args()
 

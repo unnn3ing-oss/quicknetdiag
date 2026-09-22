@@ -460,34 +460,58 @@
       return { color: COLOR.muted, dash: "" };
     }
 
-    let svgInner = "";
+    // 先把每條邊的幾何資料算出來，同一段「上下兩列之間的空隙」如果同時有好幾條邊要
+    // 經過，各自分配一條專屬的水平「車道」（lane），避免大家的橫線疊在同一個 y 上、
+    // 分不出到底有幾條線；車道依上層座標分組（同一組代表同一段上下列間的空隙），
+    // 組內再依子節點 x 排序分配，讓並排的線看起來左右有規律、不會互相穿插纏繞。
+    const edges = [];
     for (const n of nodes) {
       if (!n.parent || !byId.has(n.parent)) continue;
       const parent = byId.get(n.parent);
       const pp = pos(parent), cp = pos(n);
-
       const siblings = childrenByParent.get(n.parent);
       const idx = siblings.indexOf(n);
       const fanX = siblings.length > 1
         ? pp.x + 20 + ((CARD_W - 40) * idx) / (siblings.length - 1)
         : pp.x + CARD_W / 2;
+      edges.push({
+        parentId: n.parent, childId: n.id,
+        x1: fanX, y1: pp.y + CARD_H,
+        x2: cp.x + CARD_W / 2, y2: cp.y,
+        style: edgeStyle(n.connection_type), portLabel: n.port_label,
+      });
+    }
 
-      const x1 = fanX, y1 = pp.y + CARD_H;
-      const x2 = cp.x + CARD_W / 2, y2 = cp.y;
-      const midY = Math.round((y1 + y2) / 2) + 0.5; // +0.5 讓 1px 線落在像素格上，不會被抗鋸齒糊成兩條淡線
-      const style = edgeStyle(n.connection_type);
-      const dashAttr = style.dash ? ` stroke-dasharray="${style.dash}"` : "";
-      // 直線＋直角（下—橫—下），起點/終點精準對到卡片底邊中心／上緣中心
-      svgInner += `<path d="M${x1},${y1} L${x1},${midY} L${x2},${midY} L${x2},${y2}" fill="none" stroke="${style.color}" stroke-width="2.4"${dashAttr}/>`;
-      if (n.port_label) {
-        const lx = (x1 + x2) / 2, ly = midY;
-        svgInner += `<text x="${lx}" y="${ly}" text-anchor="middle" dominant-baseline="middle" class="topo-edge-label" paint-order="stroke" stroke="var(--surface)" stroke-width="4">${escapeXml(n.port_label)}</text>`;
+    const laneGroups = new Map(); // key: 這段空隙的上緣 y → 這一組所有邊
+    for (const e of edges) {
+      const key = Math.round(e.y1);
+      if (!laneGroups.has(key)) laneGroups.set(key, []);
+      laneGroups.get(key).push(e);
+    }
+    for (const group of laneGroups.values()) {
+      group.sort((a, b) => a.x2 - b.x2);
+      const gap = Math.max(group[0].y2 - group[0].y1, 20);
+      const lanePitch = gap / (group.length + 1);
+      group.forEach((e, i) => {
+        e.midY = Math.round(e.y1 + lanePitch * (i + 1)) + 0.5; // +0.5 避免抗鋸齒糊成兩條淡線
+      });
+    }
+
+    let svgInner = "";
+    for (const e of edges) {
+      const dashAttr = e.style.dash ? ` stroke-dasharray="${e.style.dash}"` : "";
+      let inner = `<path d="M${e.x1},${e.y1} L${e.x1},${e.midY} L${e.x2},${e.midY} L${e.x2},${e.y2}" fill="none" stroke="${e.style.color}" stroke-width="2.4"${dashAttr}/>`;
+      if (e.portLabel) {
+        const lx = (e.x1 + e.x2) / 2, ly = e.midY;
+        inner += `<text x="${lx}" y="${ly}" text-anchor="middle" dominant-baseline="middle" class="topo-edge-label" paint-order="stroke" stroke="var(--surface)" stroke-width="4">${escapeXml(e.portLabel)}</text>`;
       }
+      svgInner += `<g class="topo-edge" data-parent="${escapeXml(e.parentId)}" data-child="${escapeXml(e.childId)}">${inner}</g>`;
     }
     svg.innerHTML = svgInner;
     canvas.appendChild(svg);
 
     // 節點卡片
+    const cardEls = new Map();
     for (const n of nodes) {
       const p = pos(n);
       const up = n.ip ? n.up : null;
@@ -505,9 +529,37 @@
       card.appendChild(meta);
       attachDragHandlers(card, n);
       canvas.appendChild(card);
+      cardEls.set(n.id, card);
     }
 
+    attachHoverFocus(nodes, cardEls, svg);
+
     root.appendChild(canvas);
+  }
+
+  // 滑鼠移到一張卡片上：只保留它本身、它的上層設備、它的下層設備（直接父子，不含
+  // 更上/更下一層）跟連接這幾個的線條維持原本亮度，其餘卡片與線條降低不透明度。
+  function attachHoverFocus(nodes, cardEls, svg) {
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    for (const n of nodes) {
+      const card = cardEls.get(n.id);
+      const childIds = nodes.filter((x) => x.parent === n.id).map((x) => x.id);
+      const keepIds = new Set([n.id, n.parent, ...childIds].filter(Boolean));
+
+      card.addEventListener("mouseenter", () => {
+        for (const [id, el2] of cardEls) {
+          el2.classList.toggle("topo-dim", !keepIds.has(id));
+        }
+        for (const g of svg.querySelectorAll(".topo-edge")) {
+          const related = keepIds.has(g.dataset.parent) && keepIds.has(g.dataset.child);
+          g.classList.toggle("topo-dim", !related);
+        }
+      });
+      card.addEventListener("mouseleave", () => {
+        for (const el2 of cardEls.values()) el2.classList.remove("topo-dim");
+        for (const g of svg.querySelectorAll(".topo-edge")) g.classList.remove("topo-dim");
+      });
+    }
   }
 
   // ---------------------------------------------------------------------

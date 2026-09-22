@@ -613,7 +613,7 @@ canvas {
 
 /* ---------- 拖曳／編輯提示 ---------- */
 
-.topo-node { cursor: grab; user-select: none; touch-action: none; transition: box-shadow 0.12s ease; }
+.topo-node { cursor: grab; user-select: none; touch-action: none; transition: box-shadow 0.12s ease, opacity 0.15s ease; }
 .topo-node:hover {
   border-color: var(--series-gw);
   box-shadow: 0 0 0 3px rgba(42, 120, 214, 0.12), 0 1px 3px rgba(11, 11, 11, 0.06);
@@ -625,6 +625,11 @@ canvas {
   opacity: 0.95;
   transition: none;
 }
+
+/* 滑鼠移到某張卡片上時，跟它沒有直接上下關係的卡片／連線降低不透明度來凸顯關係 */
+.topo-node.topo-dim { opacity: 0.3; }
+.topo-edge { transition: opacity 0.15s ease; }
+.topo-edge.topo-dim { opacity: 0.15; }
 
 /* ---------- 新增／編輯設備 modal ---------- */
 

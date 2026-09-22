@@ -44,6 +44,14 @@
       <div class="stat-value"><span id="uptimePct">--</span><span class="unit">%</span></div>
       <div class="stat-sub">斷線 <span id="dropoutCount">0</span> 次 · 最長 <span id="longestDropout">0</span>秒</div>
     </div>
+    <div class="stat-card" id="bandwidthCard">
+      <div class="stat-label">即時頻寬</div>
+      <div class="stat-value stat-value-split">
+        <span class="dl">↓<span id="downMbps">--</span><span class="unit">Mbps</span></span>
+        <span class="ul">↑<span id="upMbps">--</span><span class="unit">Mbps</span></span>
+      </div>
+      <div class="stat-sub" id="bandwidthNote">下載／上傳</div>
+    </div>
   </section>
 
   <section class="panel chart-panel" aria-label="延遲趨勢">
@@ -74,6 +82,20 @@
     </div>
   </section>
 
+  <section class="panel chart-panel" aria-label="即時頻寬趨勢">
+    <div class="panel-head">
+      <h2>頻寬趨勢</h2>
+      <div class="legend">
+        <span class="legend-item"><i class="dot dot-down"></i>下載</span>
+        <span class="legend-item"><i class="dot dot-up"></i>上傳</span>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="bandwidthChart"></canvas>
+      <div class="chart-tooltip" id="bandwidthTooltip" hidden></div>
+    </div>
+  </section>
+
   <section class="panel issues-panel" aria-label="診斷結果">
     <div class="panel-head"><h2>診斷結果</h2></div>
     <ul id="issuesList" class="issues-list"></ul>
@@ -85,6 +107,14 @@
       <span class="panel-hint">設定檔：dashboard/topology.json</span>
     </div>
     <div id="topologyRoot" class="topology-root"></div>
+    <div class="topo-legend">
+      <span class="topo-legend-item"><i class="legend-line" style="color:var(--series-gw)"></i>有線</span>
+      <span class="topo-legend-item"><i class="legend-line" style="color:var(--series-ext)"></i>PoE</span>
+      <span class="topo-legend-item"><i class="legend-line dashed" style="color:var(--series-wifi)"></i>WiFi</span>
+      <span class="topo-legend-item"><i class="dot" style="background:var(--status-good)"></i>線上</span>
+      <span class="topo-legend-item"><i class="dot" style="background:var(--status-critical)"></i>離線</span>
+      <span class="topo-legend-item"><i class="dot" style="background:var(--text-muted)"></i>無管理 IP</span>
+    </div>
   </section>
 
 </main>

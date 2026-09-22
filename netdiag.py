@@ -140,6 +140,102 @@ def get_default_gateway() -> Optional[str]:
 
 
 # --------------------------------------------------------------------------
+# 網路介面累積流量（用來算即時上傳/下載頻寬）
+# --------------------------------------------------------------------------
+
+def _default_interface() -> Optional[str]:
+    try:
+        if OS_NAME == "Darwin":
+            out = subprocess.run(
+                ["route", "-n", "get", "default"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            m = re.search(r"interface:\s*(\S+)", out)
+            if m:
+                return m.group(1)
+        elif OS_NAME == "Linux":
+            out = subprocess.run(
+                ["ip", "route", "show", "default"],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            m = re.search(r"\bdev\s+(\S+)", out)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def get_net_io_counters() -> Optional[dict]:
+    """回傳目前對外網路介面累積收送的位元組數（不是速率，速率要呼叫端自己算差值）。
+
+    讀不到（平台不支援／介面找不到）就回傳 None，呼叫端要能容忍拿不到頻寬資料。
+    """
+    try:
+        if OS_NAME == "Darwin":
+            iface = _default_interface()
+            if not iface:
+                return None
+            out = subprocess.run(["netstat", "-ib"], capture_output=True, text=True, timeout=5).stdout
+            lines = out.splitlines()
+            if not lines:
+                return None
+            header = lines[0].split()
+            try:
+                i_idx = header.index("Ibytes")
+                o_idx = header.index("Obytes")
+            except ValueError:
+                return None
+            for line in lines[1:]:
+                parts = line.split()
+                if len(parts) > max(i_idx, o_idx) and parts[0] == iface:
+                    try:
+                        return {
+                            "interface": iface,
+                            "bytes_recv": int(parts[i_idx]),
+                            "bytes_sent": int(parts[o_idx]),
+                        }
+                    except ValueError:
+                        continue
+            return None
+
+        if OS_NAME == "Linux":
+            iface = _default_interface()
+            if not iface:
+                return None
+            with open("/proc/net/dev", "r") as f:
+                for line in f:
+                    if ":" not in line:
+                        continue
+                    name, rest = line.split(":", 1)
+                    if name.strip() != iface:
+                        continue
+                    fields = rest.split()
+                    return {
+                        "interface": iface,
+                        "bytes_recv": int(fields[0]),
+                        "bytes_sent": int(fields[8]),
+                    }
+            return None
+
+        if OS_NAME == "Windows":
+            # 沒有簡單、不用額外套件又能拿到「單一介面」計數器的方法，
+            # 退而求其次用 netstat -e 的全介面加總（比沒有好，但不是只算對外那張網卡）。
+            out = subprocess.run(["netstat", "-e"], capture_output=True, text=True, timeout=5).stdout
+            m = re.search(r"Bytes\s+(\d+)\s+(\d+)", out)
+            if m:
+                return {
+                    "interface": None,
+                    "bytes_recv": int(m.group(1)),
+                    "bytes_sent": int(m.group(2)),
+                }
+            return None
+    except Exception:
+        pass
+    return None
+
+
+# --------------------------------------------------------------------------
 # Ping（跨平台，解析盡量不依賴語系文字，靠數字位置判讀）
 # --------------------------------------------------------------------------
 

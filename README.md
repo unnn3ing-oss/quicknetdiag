@@ -74,8 +74,9 @@ nohup python3 netdiag.py --monitor 0 --csv wifi_log.csv > netdiag.log 2>&1 &
 
 ## 即時儀表板（網頁版，可存成 Dock App）
 
-除了終端機模式，還有一個網頁儀表板：背景持續監控，瀏覽器即時看延遲/遺失率趨勢圖、
-WiFi 訊號、診斷結果，還有你家設備的網路架構圖（每個節點即時顯示線上/離線）。
+除了終端機模式，還有一個網頁儀表板：背景持續監控，瀏覽器即時看延遲/遺失率/頻寬趨勢圖、
+WiFi 訊號、診斷結果，還有你家設備的網路架構圖（依樓層分區、連線依有線/PoE/WiFi 上色、
+每個節點即時顯示線上/離線）。淺色介面、字級加大方便閱讀。
 
 ```bash
 python3 dashboard/server.py
@@ -87,9 +88,22 @@ python3 dashboard/server.py
 「加入 Dock」，就會變成一個獨立視窗的 App 圖示，跟開網頁分開，關掉終端機前它會持續更新
 （只要 `dashboard/server.py` 還在背景跑）。
 
-**設定你家的網路架構圖**：編輯 `dashboard/topology.json`，把裡面的示範設備／IP
-改成你實際的路由器、PoE Switch、NVR、Mesh 節點等等，存檔後重新整理網頁就會套用，
-不用重開伺服器。裡面已經附中文說明可以直接照著改。
+**設定你家的網路架構圖**：兩種方式擇一。
+
+1. 編輯 `dashboard/topology.json`，把裡面的示範設備／IP 改成你實際的路由器、PoE Switch、
+   NVR、Mesh 節點等等（裡面附中文說明），存檔後重新整理網頁就會套用，不用重開伺服器。
+2. 如果你已經有另一套網路掃描／資產管理工具（例如匯出格式為 `{"devices": {...},
+   "topology": {...}}`，每台設備含 `custom_x`/`custom_y`/`floor`/`device_type` 等欄位），
+   可以直接用 `--topology-file` 指向那個檔案，不用手動轉檔：
+   ```bash
+   python3 dashboard/server.py --topology-file /path/to/devices.json
+   ```
+   會自動依 `floor` 分區、依 `custom_x`/`custom_y` 排版（跟原工具畫面一致）、
+   依 `connection_type`（POE／有線Cat6／WIFI）幫連線上色。設備的線上/離線狀態
+   仍由這個儀表板自己即時 ping，不依賴來源檔案裡的 `is_online` 欄位。
+
+架構圖圖例：藍線＝有線、橘線＝PoE、虛線＝WiFi；綠燈＝線上、紅燈＝離線、灰燈＝無管理 IP
+（純交換器等結構節點）。「未分類區」放的是抓得到但沒手動分類樓層的設備（手機、筆電等）。
 
 **背景長期執行**：
 
@@ -113,6 +127,9 @@ nohup python3 dashboard/server.py --csv wifi_log.csv > dashboard.log 2>&1 &
 
 - WiFi 訊號讀取依平台而異，且部分系統（例如新版 macOS 拿掉了 `airport` 指令、或用有線網路）
   可能讀不到，這種情況下腳本仍會正常執行其他測試，只是不會顯示 WiFi 訊號。
+- 「即時頻寬」量測的是這台電腦對外那張網卡的累積流量差值（Mac/Linux 抓得到實際介面名稱；
+  Windows 目前退而求其次用全介面加總，不是只算對外那張網卡，數字僅供參考）。量的是
+  「這台電腦」的用量，不是「全家」的用量；如果只是想看有沒有掉速，仍具參考價值。
 - 需要系統本身有 `ping` 指令的執行權限；企業/防火牆環境可能封鎖 ICMP，導致誤判為斷線，
   這種情況可用 `--target` 換成你確定會回應 ping 的內部主機測試。
 - 這是本機診斷工具，測的是「你這台電腦到路由器/外部的連線品質」，不是路由器本身的系統紀錄；

@@ -8,8 +8,10 @@
     gw: css.getPropertyValue("--series-gw").trim(),
     ext: css.getPropertyValue("--series-ext").trim(),
     wifi: css.getPropertyValue("--series-wifi").trim(),
-    grid: "rgba(255,255,255,0.08)",
-    axis: "rgba(255,255,255,0.35)",
+    down: css.getPropertyValue("--series-down").trim(),
+    up: css.getPropertyValue("--series-up").trim(),
+    grid: "rgba(11,11,11,0.08)",
+    axis: "rgba(11,11,11,0.35)",
     muted: css.getPropertyValue("--text-muted").trim(),
   };
 
@@ -22,6 +24,12 @@
   function fmt(n, digits = 0) {
     if (n === null || n === undefined || Number.isNaN(n)) return "--";
     return Number(n).toFixed(digits);
+  }
+
+  function escapeXml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;",
+    }[c]));
   }
 
   function timeLabel(iso) {
@@ -92,6 +100,11 @@
       document.getElementById("dropoutCount").textContent = stats.dropout_count;
       document.getElementById("longestDropout").textContent = fmt(stats.longest_dropout_s, 0);
     }
+
+    const bw = current.bandwidth;
+    document.getElementById("downMbps").textContent = bw ? fmt(bw.down_mbps, 1) : "--";
+    document.getElementById("upMbps").textContent = bw ? fmt(bw.up_mbps, 1) : "--";
+    document.getElementById("bandwidthNote").textContent = bw ? "下載／上傳" : "此平台暫不支援量測";
 
     document.getElementById("lastUpdate").textContent = timeLabel(current.timestamp);
   }
@@ -304,31 +317,30 @@
   // ---------------------------------------------------------------------
 
   const TOPO_ICONS = {
-    modem: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="8" width="18" height="9" rx="2"/><circle cx="8" cy="12.5" r="1"/><circle cx="12" cy="12.5" r="1"/></svg>',
-    router: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="11" width="18" height="8" rx="2"/><path d="M8 11 6 4M16 11l2-7"/><circle cx="8" cy="15" r="1"/></svg>',
-    switch: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M6.5 17v2M10.5 17v2M14.5 17v2M18.5 17v2"/></svg>',
-    nvr: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="6" width="14" height="12" rx="2"/><path d="M17 10l4-2.5v9L17 14"/></svg>',
-    mesh: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 9a12 12 0 0 1 16 0M7 12.5a7.5 7.5 0 0 1 10 0"/><circle cx="12" cy="17" r="1.4" fill="currentColor" stroke="none"/></svg>',
-    default: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="7"/></svg>',
+    modem: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="8" width="18" height="9" rx="2"/><circle cx="8" cy="12.5" r="1"/><circle cx="12" cy="12.5" r="1"/></svg>',
+    router: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="11" width="18" height="8" rx="2"/><path d="M8 11 6 4M16 11l2-7"/><circle cx="8" cy="15" r="1"/></svg>',
+    switch: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M6.5 17v2M10.5 17v2M14.5 17v2M18.5 17v2"/></svg>',
+    poe_switch: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M6.5 17v2M10.5 17v2M14.5 17v2M18.5 17v2"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>',
+    nvr: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="6" width="14" height="12" rx="2"/><path d="M17 10l4-2.5v9L17 14"/></svg>',
+    ipcam: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="9" width="13" height="9" rx="2"/><path d="M15 12.5l6-3.5v8l-6-3.5"/><circle cx="8.5" cy="13.5" r="2"/></svg>',
+    ap: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 9a12 12 0 0 1 16 0M7 12.5a7.5 7.5 0 0 1 10 0"/><circle cx="12" cy="17" r="1.4" fill="currentColor" stroke="none"/></svg>',
+    mesh: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 9a12 12 0 0 1 16 0M7 12.5a7.5 7.5 0 0 1 10 0"/><circle cx="12" cy="17" r="1.4" fill="currentColor" stroke="none"/></svg>',
+    smart_home: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="10" r="6"/><path d="M9.5 20h5M10.5 16.5h3"/></svg>',
+    unknown: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="7"/></svg>',
+    default: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="7"/></svg>',
   };
 
-  function computeDepths(nodes) {
-    const byId = new Map(nodes.map((n) => [n.id, n]));
-    const depth = new Map();
-    function depthOf(id, guard = 0) {
-      if (depth.has(id)) return depth.get(id);
-      if (guard > 20) return 0;
-      const node = byId.get(id);
-      if (!node || node.parent == null || !byId.has(node.parent)) {
-        depth.set(id, 0);
-        return 0;
-      }
-      const d = depthOf(node.parent, guard + 1) + 1;
-      depth.set(id, d);
-      return d;
-    }
-    for (const n of nodes) depthOf(n.id);
-    return depth;
+  const FLOOR_LABELS = { Uncategorized: "未分類區" };
+  const CARD_W = 172;
+  const CARD_H = 62;
+  const TOPO_SCALE = 0.5;
+  const TOPO_PAD = 26;
+
+  function floorSortKey(floor) {
+    if (floor === "Uncategorized") return [2, floor];
+    const m = /^(\d+)/.exec(floor);
+    if (m) return [0, parseInt(m[1], 10), floor];
+    return [1, floor];
   }
 
   function renderTopology(nodes) {
@@ -336,62 +348,132 @@
     root.innerHTML = "";
     if (!nodes || !nodes.length) {
       root.appendChild(el("div", { class: "topo-empty" }, [
-        document.createTextNode("尚未設定架構圖，編輯 dashboard/topology.json 加入你家的設備即可自動顯示。"),
+        document.createTextNode("尚未設定架構圖，編輯 dashboard/topology.json 加入你家的設備即可自動顯示（或指向現有掃描工具的 devices.json）。"),
       ]));
       return;
     }
 
-    const depths = computeDepths(nodes);
-    const maxDepth = Math.max(...nodes.map((n) => depths.get(n.id) || 0));
-    const rows = [];
-    for (let d = 0; d <= maxDepth; d++) rows.push([]);
-    for (const n of nodes) rows[depths.get(n.id) || 0].push(n);
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const pos = (n) => ({ x: (n.x || 0) * TOPO_SCALE, y: (n.y || 0) * TOPO_SCALE });
 
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("class", "topo-svg");
-    root.appendChild(svg);
+    let maxX = 0, maxY = 0;
+    for (const n of nodes) {
+      const p = pos(n);
+      maxX = Math.max(maxX, p.x + CARD_W);
+      maxY = Math.max(maxY, p.y + CARD_H);
+    }
+    const canvas = el("div", { class: "topo-canvas" });
+    canvas.style.width = `${maxX + TOPO_PAD}px`;
+    canvas.style.height = `${maxY + TOPO_PAD}px`;
 
-    const nodeEls = new Map();
-    for (const row of rows) {
-      const rowEl = el("div", { class: "topo-row" });
-      for (const n of row) {
-        const up = n.ip ? n.up : null;
-        const card = el("div", { class: "topo-node", "data-up": String(up), "data-id": n.id });
-        card.appendChild(el("span", { class: "led" }));
-        card.appendChild(el("span", { class: "topo-icon", html: TOPO_ICONS[n.type] || TOPO_ICONS.default }));
-        const meta = el("div", { class: "topo-meta" });
-        meta.appendChild(el("span", { class: "topo-name" }, [document.createTextNode(n.name || n.id)]));
-        const ipText = n.ip ? (n.avg_ms != null ? `${n.ip} · ${fmt(n.avg_ms, 0)}ms` : n.ip) : "—";
-        meta.appendChild(el("span", { class: "topo-ip" }, [document.createTextNode(ipText)]));
-        card.appendChild(meta);
-        rowEl.appendChild(card);
-        nodeEls.set(n.id, card);
+    // 樓層外框（同一層的設備框在一起，跟原圖一樣分區）
+    const floors = new Map();
+    for (const n of nodes) {
+      const key = n.floor || "Uncategorized";
+      if (!floors.has(key)) floors.set(key, []);
+      floors.get(key).push(n);
+    }
+    const floorKeys = [...floors.keys()].sort((a, b) => {
+      const ka = floorSortKey(a), kb = floorSortKey(b);
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    });
+    if (floorKeys.length > 1) {
+      for (const key of floorKeys) {
+        const members = floors.get(key);
+        let fx0 = Infinity, fy0 = Infinity, fx1 = -Infinity, fy1 = -Infinity;
+        for (const n of members) {
+          const p = pos(n);
+          fx0 = Math.min(fx0, p.x);
+          fy0 = Math.min(fy0, p.y);
+          fx1 = Math.max(fx1, p.x + CARD_W);
+          fy1 = Math.max(fy1, p.y + CARD_H);
+        }
+        const pad = 20;
+        const box = el("div", { class: "topo-floor-box" });
+        box.style.left = `${fx0 - pad}px`;
+        box.style.top = `${fy0 - pad - 22}px`;
+        box.style.width = `${fx1 - fx0 + pad * 2}px`;
+        box.style.height = `${fy1 - fy0 + pad * 2 + 22}px`;
+        const label = el("div", { class: "topo-floor-label" }, [
+          document.createTextNode(FLOOR_LABELS[key] || key),
+        ]);
+        box.appendChild(label);
+        canvas.appendChild(box);
       }
-      root.appendChild(rowEl);
     }
 
-    requestAnimationFrame(() => {
-      const rootRect = root.getBoundingClientRect();
-      svg.setAttribute("width", root.scrollWidth);
-      svg.setAttribute("height", root.scrollHeight);
-      svg.setAttribute("viewBox", `0 0 ${root.scrollWidth} ${root.scrollHeight}`);
-      let paths = "";
-      for (const n of nodes) {
-        if (n.parent == null) continue;
-        const childEl = nodeEls.get(n.id);
-        const parentEl = nodeEls.get(n.parent);
-        if (!childEl || !parentEl) continue;
-        const c = childEl.getBoundingClientRect();
-        const p = parentEl.getBoundingClientRect();
-        const x1 = p.left - rootRect.left + p.width / 2 + root.scrollLeft;
-        const y1 = p.bottom - rootRect.top + root.scrollTop;
-        const x2 = c.left - rootRect.left + c.width / 2 + root.scrollLeft;
-        const y2 = c.top - rootRect.top + root.scrollTop;
-        const midY = (y1 + y2) / 2;
-        paths += `<path d="M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}" fill="none" stroke="rgba(255,255,255,0.22)" stroke-width="1.4"/>`;
+    // 連線（含 port 標籤），畫在節點卡片底下。同一個父節點底下的多個子節點，
+    // 從父卡片底邊不同的 x 位置分別出發（fan-out），避免全部疊在正中央同一點、
+    // 讓線條彼此糾纏；顏色/線型依連線類型區分（有線／PoE／WiFi），方便一眼分辨。
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "topo-svg");
+    svg.setAttribute("width", maxX + TOPO_PAD);
+    svg.setAttribute("height", maxY + TOPO_PAD);
+
+    const childrenByParent = new Map();
+    for (const n of nodes) {
+      if (!n.parent || !byId.has(n.parent)) continue;
+      if (!childrenByParent.has(n.parent)) childrenByParent.set(n.parent, []);
+      childrenByParent.get(n.parent).push(n);
+    }
+    for (const kids of childrenByParent.values()) {
+      kids.sort((a, b) => pos(a).x - pos(b).x);
+    }
+
+    function edgeStyle(connType) {
+      const t = (connType || "").toUpperCase();
+      if (t.includes("POE")) return { color: COLOR.ext, dash: "" };
+      if (t.includes("WIFI") || t.includes("WI-FI")) return { color: COLOR.wifi, dash: "5 4" };
+      if (t.includes("CAT") || t.includes("有線") || t.includes("ETHERNET")) return { color: COLOR.gw, dash: "" };
+      return { color: COLOR.muted, dash: "" };
+    }
+
+    let svgInner = "";
+    for (const n of nodes) {
+      if (!n.parent || !byId.has(n.parent)) continue;
+      const parent = byId.get(n.parent);
+      const pp = pos(parent), cp = pos(n);
+
+      const siblings = childrenByParent.get(n.parent);
+      const idx = siblings.indexOf(n);
+      const fanX = siblings.length > 1
+        ? pp.x + 20 + ((CARD_W - 40) * idx) / (siblings.length - 1)
+        : pp.x + CARD_W / 2;
+
+      const x1 = fanX, y1 = pp.y + CARD_H;
+      const x2 = cp.x + CARD_W / 2, y2 = cp.y;
+      const midY = (y1 + y2) / 2;
+      const style = edgeStyle(n.connection_type);
+      const dashAttr = style.dash ? ` stroke-dasharray="${style.dash}"` : "";
+      svgInner += `<path d="M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}" fill="none" stroke="${style.color}" stroke-opacity="0.55" stroke-width="1.4"${dashAttr}/>`;
+      if (n.port_label) {
+        const lx = (x1 + x2) / 2, ly = midY;
+        svgInner += `<text x="${lx}" y="${ly}" text-anchor="middle" dominant-baseline="middle" class="topo-edge-label" paint-order="stroke" stroke="var(--surface)" stroke-width="4">${escapeXml(n.port_label)}</text>`;
       }
-      svg.innerHTML = paths;
-    });
+    }
+    svg.innerHTML = svgInner;
+    canvas.appendChild(svg);
+
+    // 節點卡片
+    for (const n of nodes) {
+      const p = pos(n);
+      const up = n.ip ? n.up : null;
+      const card = el("div", { class: "topo-node", "data-up": String(up), "data-id": n.id });
+      card.style.left = `${p.x}px`;
+      card.style.top = `${p.y}px`;
+      card.style.width = `${CARD_W}px`;
+      card.appendChild(el("span", { class: "led" }));
+      card.appendChild(el("span", { class: "topo-icon", html: TOPO_ICONS[n.type] || TOPO_ICONS.default }));
+      const meta = el("div", { class: "topo-meta" });
+      meta.appendChild(el("span", { class: "topo-name" }, [document.createTextNode(n.name || n.id)]));
+      const ipBase = n.ip_display || n.ip;
+      const ipText = ipBase ? (n.avg_ms != null ? `${ipBase} · ${fmt(n.avg_ms, 0)}ms` : ipBase) : (n.location || "—");
+      meta.appendChild(el("span", { class: "topo-ip" }, [document.createTextNode(ipText)]));
+      card.appendChild(meta);
+      canvas.appendChild(card);
+    }
+
+    root.appendChild(canvas);
   }
 
   // ---------------------------------------------------------------------
@@ -418,6 +500,16 @@
     "%"
   );
 
+  const bandwidthChart = new LineChart(
+    document.getElementById("bandwidthChart"),
+    document.getElementById("bandwidthTooltip"),
+    [
+      { key: "down_mbps", color: COLOR.down, label: "下載" },
+      { key: "up_mbps", color: COLOR.up, label: "上傳" },
+    ],
+    "Mbps"
+  );
+
   let consecutiveErrors = 0;
 
   async function poll() {
@@ -435,6 +527,7 @@
       }
       latencyChart.setData(data.history);
       lossChart.setData(data.history);
+      bandwidthChart.setData(data.history);
       if (data.topology) renderTopology(data.topology);
     } catch (err) {
       consecutiveErrors += 1;
@@ -447,6 +540,7 @@
   window.addEventListener("resize", () => {
     latencyChart.render();
     lossChart.render();
+    bandwidthChart.render();
   });
 
   poll();

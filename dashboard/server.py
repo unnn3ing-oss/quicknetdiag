@@ -53,17 +53,98 @@ def overall_status(issues: list) -> str:
     return worst
 
 
+def _split_ip(raw) -> tuple:
+    """把 "192.168.10.100:51630" 拆成 (拿去 ping 的 host, 顯示用的完整字串)。"""
+    if not raw:
+        return None, None
+    raw = str(raw).strip()
+    if not raw:
+        return None, None
+    host = raw.split(":")[0] if raw.count(":") == 1 else raw  # 避免誤切 IPv6，只切「一個冒號」的情況
+    return host, raw
+
+
+def _from_scanner_schema(data: dict) -> list:
+    """轉換另一套掃描工具（network-monitor）的 devices.json 格式。"""
+    devices = data.get("devices", {})
+    edges = data.get("topology", {})
+    nodes = []
+    for dev_id, dev in devices.items():
+        edge = edges.get(dev_id, {})
+        host, ip_display = _split_ip(dev.get("ip_address"))
+        name = dev.get("custom_name") or dev.get("detected_name") or dev.get("series") or dev_id
+        nodes.append({
+            "id": dev_id,
+            "name": name,
+            "type": dev.get("device_type") or "default",
+            "ip": host,
+            "ip_display": ip_display,
+            "location": dev.get("location") or "",
+            "parent": edge.get("parent_mac") or None,
+            "port_label": edge.get("port_label_src") or "",
+            "connection_type": edge.get("connection_type") or "",
+            "floor": dev.get("floor") or "Uncategorized",
+            "x": dev.get("custom_x"),
+            "y": dev.get("custom_y"),
+        })
+    return nodes
+
+
+def _auto_layout(nodes: list) -> None:
+    """替沒有座標的節點（例如手寫的簡易 topology.json）自動排版：depth 當列，同列依序排開。"""
+    by_id = {n["id"]: n for n in nodes}
+    depth_cache = {}
+
+    def depth_of(node_id, guard=0):
+        if node_id in depth_cache:
+            return depth_cache[node_id]
+        if guard > 20:
+            return 0
+        node = by_id.get(node_id)
+        if not node or not node.get("parent") or node["parent"] not in by_id:
+            depth_cache[node_id] = 0
+            return 0
+        d = depth_of(node["parent"], guard + 1) + 1
+        depth_cache[node_id] = d
+        return d
+
+    rows: dict = {}
+    for n in nodes:
+        if n.get("x") is not None and n.get("y") is not None:
+            continue
+        d = depth_of(n["id"])
+        rows.setdefault(d, []).append(n)
+
+    for depth, row_nodes in rows.items():
+        for i, n in enumerate(row_nodes):
+            n["x"] = 80 + i * 220
+            n["y"] = 80 + depth * 165
+
+
 def load_topology(path: str) -> list:
     if not os.path.exists(path):
         return []
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        nodes = data.get("nodes", [])
+
+        if "devices" in data and "topology" in data:
+            nodes = _from_scanner_schema(data)
+        else:
+            nodes = data.get("nodes", [])
+            for n in nodes:
+                n.setdefault("ip_display", n.get("ip"))
+                n.setdefault("floor", "住家")
+                n.setdefault("port_label", "")
+                n.setdefault("connection_type", "")
+                n.setdefault("location", "")
+
         valid_ids = {n["id"] for n in nodes}
         for n in nodes:
             if n.get("parent") is not None and n["parent"] not in valid_ids:
                 n["parent"] = None  # 設定檔打錯字時退成根節點，不讓整份拓樸圖噴掉
+
+        _auto_layout(nodes)
         return nodes
     except (json.JSONDecodeError, OSError, KeyError) as exc:
         print(f"[警告] 讀取拓樸設定檔失敗（{path}）：{exc}，本輪拓樸圖略過。")
@@ -108,7 +189,8 @@ class AppState:
         self._dropout_start = None
         self._up_rounds = 0
 
-    def record_round(self, snap: "netdiag.Snapshot", issues: list, topology: list) -> None:
+    def record_round(self, snap: "netdiag.Snapshot", issues: list, topology: list,
+                      down_mbps: float = None, up_mbps: float = None) -> None:
         with self.lock:
             self.rounds += 1
             gp = snap.gateway_ping
@@ -138,6 +220,8 @@ class AppState:
                 "ext_loss": ext_pr.loss_pct if ext_pr else None,
                 "ext_ms": round(ext_pr.avg_ms, 1) if ext_pr and ext_pr.avg_ms is not None else None,
                 "wifi_signal": sig,
+                "down_mbps": round(down_mbps, 2) if down_mbps is not None else None,
+                "up_mbps": round(up_mbps, 2) if up_mbps is not None else None,
             }
             self.history.append(point)
 
@@ -173,6 +257,10 @@ class AppState:
                     {"severity": i.severity, "title": i.title, "detail": i.detail, "suggestion": i.suggestion}
                     for i in issues
                 ],
+                "bandwidth": (
+                    {"down_mbps": round(down_mbps, 2), "up_mbps": round(up_mbps, 2)}
+                    if down_mbps is not None and up_mbps is not None else None
+                ),
             }
             if topology:
                 self.topology = topology
@@ -208,9 +296,12 @@ def monitor_loop(state: AppState, gateway_ip, ext_target, interval_s: float,
         csv_writer = csv.writer(csv_file)
         if is_new:
             csv_writer.writerow(["timestamp", "gateway_loss_pct", "gateway_avg_ms",
-                                  "ext_loss_pct", "ext_avg_ms", "wifi_signal", "gateway_up"])
+                                  "ext_loss_pct", "ext_avg_ms", "wifi_signal", "gateway_up",
+                                  "down_mbps", "up_mbps"])
 
     round_no = 0
+    prev_counters = None
+    prev_time = None
     while True:
         start = time.time()
         round_no += 1
@@ -224,7 +315,20 @@ def monitor_loop(state: AppState, gateway_ip, ext_target, interval_s: float,
             nodes = load_topology(state.topology_path)
             topology = ping_topology(nodes)
 
-        state.record_round(snap, issues, topology)
+        down_mbps = up_mbps = None
+        counters = netdiag.get_net_io_counters()
+        now = time.time()
+        if counters and prev_counters and prev_time:
+            dt = now - prev_time
+            d_recv = counters["bytes_recv"] - prev_counters["bytes_recv"]
+            d_sent = counters["bytes_sent"] - prev_counters["bytes_sent"]
+            if dt > 0 and d_recv >= 0 and d_sent >= 0:  # 負值代表計數器重置（介面重連等），這輪跳過不算
+                down_mbps = d_recv * 8 / 1e6 / dt
+                up_mbps = d_sent * 8 / 1e6 / dt
+        prev_counters = counters
+        prev_time = now
+
+        state.record_round(snap, issues, topology, down_mbps, up_mbps)
 
         if csv_writer:
             gp = snap.gateway_ping
@@ -240,6 +344,8 @@ def monitor_loop(state: AppState, gateway_ip, ext_target, interval_s: float,
                 f"{ext_pr.avg_ms:.1f}" if ext_pr and ext_pr.avg_ms is not None else "",
                 sig if sig is not None else "",
                 int((gp is None) or (gp.received > 0)),
+                f"{down_mbps:.2f}" if down_mbps is not None else "",
+                f"{up_mbps:.2f}" if up_mbps is not None else "",
             ])
             csv_file.flush()
 

@@ -340,16 +340,25 @@ def _wifi_windows(info: WifiInfo) -> None:
 # 快照與診斷
 # --------------------------------------------------------------------------
 
-def take_snapshot(gateway_ip: Optional[str], extra_targets: list, ping_count: int) -> Snapshot:
+def take_snapshot(gateway_ip: Optional[str], extra_targets: list, ping_count: int,
+                   check_dns: bool = True, targets: Optional[list] = None) -> Snapshot:
+    """組一份完整快照。
+
+    targets 給定時取代預設的對外目標清單（用於儀表板背景輪詢時只測一個目標，
+    避免每輪都把 DEFAULT_EXTERNAL_TARGETS 全測一次拖慢輪詢間隔）；
+    check_dns=False 時跳過 DNS 測試（同樣是為了讓高頻率輪詢更快）。
+    """
     snap = Snapshot(timestamp=datetime.now(), gateway_ip=gateway_ip, gateway_ping=None)
     if gateway_ip:
         snap.gateway_ping = ping_host(gateway_ip, count=ping_count)
 
-    for name, host in DEFAULT_EXTERNAL_TARGETS + extra_targets:
+    ext_targets = targets if targets is not None else DEFAULT_EXTERNAL_TARGETS + extra_targets
+    for name, host in ext_targets:
         snap.external_pings.append((name, ping_host(host, count=ping_count)))
 
-    for domain in DNS_TEST_DOMAINS:
-        snap.dns_ms[domain] = resolve_dns_ms(domain)
+    if check_dns:
+        for domain in DNS_TEST_DOMAINS:
+            snap.dns_ms[domain] = resolve_dns_ms(domain)
 
     snap.wifi = get_wifi_info()
     return snap
@@ -438,9 +447,11 @@ def diagnose(snap: Snapshot) -> list:
     elif ext_ok:
         issues.append(Issue("ok", "對外連線正常", "", ""))
 
-    # DNS
+    # DNS（dns_ms 是空字典代表這輪沒測 DNS，直接略過，不當成全部失敗）
     dns_ok = {d: (ms is not None) for d, ms in snap.dns_ms.items()}
-    if not any(dns_ok.values()) and any(ext_ok):
+    if not snap.dns_ms:
+        pass
+    elif not any(dns_ok.values()) and any(ext_ok):
         issues.append(Issue(
             "medium", "DNS 解析全部失敗，但對外連線正常",
             "能連上外部 IP，但網域名稱都解析不到。",

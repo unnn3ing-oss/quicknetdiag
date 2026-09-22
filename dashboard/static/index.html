@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>家用網路醫生</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="scanlines" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-title">家用網路醫生</span>
+    <span class="brand-sub">NETDIAG // LIVE CONSOLE</span>
+  </div>
+  <div class="status-pill" id="statusPill" data-status="good">
+    <span class="led"></span>
+    <span id="statusText">初始化中</span>
+  </div>
+</header>
+
+<main class="grid">
+
+  <section class="panel stat-row" aria-label="即時數值">
+    <div class="stat-card" id="gwCard">
+      <div class="stat-label">路由器（區網）</div>
+      <div class="stat-value"><span id="gwMs">--</span><span class="unit">ms</span></div>
+      <div class="stat-sub"><span id="gwLoss">--</span> 遺失 · 抖動 <span id="gwJitter">--</span>ms</div>
+    </div>
+    <div class="stat-card" id="extCard">
+      <div class="stat-label">對外連線 <span id="extHost" class="stat-label-sub"></span></div>
+      <div class="stat-value"><span id="extMs">--</span><span class="unit">ms</span></div>
+      <div class="stat-sub"><span id="extLoss">--</span> 遺失</div>
+    </div>
+    <div class="stat-card" id="wifiCard">
+      <div class="stat-label">WiFi <span id="wifiSsid" class="stat-label-sub"></span></div>
+      <div class="stat-value"><span id="wifiSignal">--</span></div>
+      <div class="signal-bar"><div class="signal-bar-fill" id="wifiBar"></div></div>
+      <div class="stat-sub">頻道 <span id="wifiChannel">--</span></div>
+    </div>
+    <div class="stat-card" id="uptimeCard">
+      <div class="stat-label">監控中</div>
+      <div class="stat-value"><span id="uptimePct">--</span><span class="unit">%</span></div>
+      <div class="stat-sub">斷線 <span id="dropoutCount">0</span> 次 · 最長 <span id="longestDropout">0</span>秒</div>
+    </div>
+  </section>
+
+  <section class="panel chart-panel" aria-label="延遲趨勢">
+    <div class="panel-head">
+      <h2>延遲趨勢</h2>
+      <div class="legend">
+        <span class="legend-item"><i class="dot dot-gw"></i>路由器</span>
+        <span class="legend-item"><i class="dot dot-ext"></i>對外</span>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="latencyChart"></canvas>
+      <div class="chart-tooltip" id="latencyTooltip" hidden></div>
+    </div>
+  </section>
+
+  <section class="panel chart-panel" aria-label="封包遺失率">
+    <div class="panel-head">
+      <h2>封包遺失率</h2>
+      <div class="legend">
+        <span class="legend-item"><i class="dot dot-gw"></i>路由器</span>
+        <span class="legend-item"><i class="dot dot-ext"></i>對外</span>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="lossChart"></canvas>
+      <div class="chart-tooltip" id="lossTooltip" hidden></div>
+    </div>
+  </section>
+
+  <section class="panel issues-panel" aria-label="診斷結果">
+    <div class="panel-head"><h2>診斷結果</h2></div>
+    <ul id="issuesList" class="issues-list"></ul>
+  </section>
+
+  <section class="panel topology-panel" aria-label="網路架構">
+    <div class="panel-head">
+      <h2>網路架構</h2>
+      <span class="panel-hint">設定檔：dashboard/topology.json</span>
+    </div>
+    <div id="topologyRoot" class="topology-root"></div>
+  </section>
+
+</main>
+
+<footer class="footbar">
+  <span>最後更新 <span id="lastUpdate">--</span></span>
+  <span id="connError" class="conn-error" hidden>連不上伺服器，重試中…</span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

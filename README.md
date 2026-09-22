@@ -72,6 +72,43 @@ nohup python3 netdiag.py --monitor 0 --csv wifi_log.csv > netdiag.log 2>&1 &
 
 實際輸出會依當下量到的數字給出更明確的建議。
 
+## 即時儀表板（網頁版，可存成 Dock App）
+
+除了終端機模式，還有一個網頁儀表板：背景持續監控，瀏覽器即時看延遲/遺失率趨勢圖、
+WiFi 訊號、診斷結果，還有你家設備的網路架構圖（每個節點即時顯示線上/離線）。
+
+```bash
+python3 dashboard/server.py
+```
+
+啟動後瀏覽器開 <http://127.0.0.1:8765>。全程本機執行，資料不會送到任何外部伺服器。
+
+**存成 Mac Dock App（macOS Sonoma 以上）**：Safari 開啟該網址 → 選單「檔案」→
+「加入 Dock」，就會變成一個獨立視窗的 App 圖示，跟開網頁分開，關掉終端機前它會持續更新
+（只要 `dashboard/server.py` 還在背景跑）。
+
+**設定你家的網路架構圖**：編輯 `dashboard/topology.json`，把裡面的示範設備／IP
+改成你實際的路由器、PoE Switch、NVR、Mesh 節點等等，存檔後重新整理網頁就會套用，
+不用重開伺服器。裡面已經附中文說明可以直接照著改。
+
+**背景長期執行**：
+
+```bash
+nohup python3 dashboard/server.py --csv wifi_log.csv > dashboard.log 2>&1 &
+```
+
+**常用參數**：
+
+| 參數 | 說明 |
+|---|---|
+| `--port 8765` | 網頁伺服器埠號 |
+| `--host 0.0.0.0` | 開放家用網路內其他裝置（例如手機）連進來看；預設只有這台電腦能看 |
+| `--interval 5` | 量測間隔秒數 |
+| `--history 720` | 圖表保留的資料點數（預設約 1 小時） |
+| `--gateway IP` | 手動指定路由器 IP |
+| `--csv FILE` | 同時把每輪量測記錄到 CSV |
+| `--topology-file PATH` | 自訂拓樸圖設定檔路徑 |
+
 ## 已知限制
 
 - WiFi 訊號讀取依平台而異，且部分系統（例如新版 macOS 拿掉了 `airport` 指令、或用有線網路）

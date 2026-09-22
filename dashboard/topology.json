@@ -1,0 +1,11 @@
+{
+  "_說明": "把下面每個設備的 ip 改成你家實際的 IP，name 隨意改。parent 是它接上游的那個節點 id（modem 通常沒有 IP，設 null 即可，架構圖上只顯示不會被 ping）。id 只要彼此不重複、跟 parent 對得起來就好。要新增/刪除設備、改連接關係，直接編輯這個檔案存檔即可，重新整理網頁就會套用，不用重開伺服器。",
+  "nodes": [
+    { "id": "modem",  "name": "數據機／光世代 ONT", "type": "modem",  "ip": null,            "parent": null },
+    { "id": "router", "name": "Zyxel 路由器",       "type": "router", "ip": "192.168.1.1",   "parent": "modem" },
+    { "id": "switch", "name": "PoE Switch",         "type": "switch", "ip": "192.168.1.2",   "parent": "router" },
+    { "id": "nvr",    "name": "NVR",                "type": "nvr",    "ip": "192.168.1.10",  "parent": "switch" },
+    { "id": "mesh1",  "name": "Mesh 節點（客廳）",    "type": "mesh",   "ip": "192.168.1.3",   "parent": "router" },
+    { "id": "mesh2",  "name": "Mesh 節點（房間）",    "type": "mesh",   "ip": "192.168.1.4",   "parent": "router" }
+  ]
+}

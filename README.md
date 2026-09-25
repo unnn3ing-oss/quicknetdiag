@@ -85,6 +85,13 @@ python3 dashboard/server.py
 
 啟動後瀏覽器開 <http://127.0.0.1:8765>。全程本機執行，資料不會送到任何外部伺服器。
 
+**快速啟動（macOS，不用開終端機打指令）**：雙擊 `start_dashboard.command`，會自動在背景
+啟動伺服器、等它就緒後直接開瀏覽器，視窗可以馬上關掉不影響背景執行；要停止就雙擊
+`stop_dashboard.command`。第一次雙擊如果被 macOS 擋下（顯示「無法驗證開發者」），改成
+「右鍵點檔案 → 打開」，跳出視窗選「打開」即可，之後雙擊就正常了。如果要接
+`--topology-file` 指到你自己的 `devices.json`，打開 `start_dashboard.command` 把裡面
+`TOPOLOGY_FILE` 那行的路徑改掉就好，改完存檔即可，不用重新設定。
+
 **存成 Mac Dock App（macOS Sonoma 以上）**：Safari 開啟該網址 → 選單「檔案」→
 「加入 Dock」，就會變成一個獨立視窗的 App 圖示，跟開網頁分開，關掉終端機前它會持續更新
 （只要 `dashboard/server.py` 還在背景跑）。

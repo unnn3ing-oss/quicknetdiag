@@ -1,7 +1,21 @@
 (() => {
   "use strict";
 
-  const POLL_MS = 3000;
+  const POLL_MS_DEFAULT = 3000;
+  const POLL_MS_KEY = "netdiag_poll_interval_ms";
+
+  function getPollMs() {
+    try {
+      const saved = parseInt(localStorage.getItem(POLL_MS_KEY), 10);
+      return Number.isFinite(saved) && saved > 0 ? saved : POLL_MS_DEFAULT;
+    } catch (e) {
+      return POLL_MS_DEFAULT; // 私密瀏覽模式讀不到就用預設值
+    }
+  }
+
+  function setPollMs(ms) {
+    try { localStorage.setItem(POLL_MS_KEY, String(ms)); } catch (e) { /* 私密瀏覽模式存不了就算了 */ }
+  }
 
   const css = getComputedStyle(document.documentElement);
   const COLOR = {
@@ -368,11 +382,186 @@
   const TOPO_SCALE = 1;
   const TOPO_PAD = 26;
 
+  // 跟 server.py 的 GRID_STEP_X / GRID_STEP_Y / GRID_ORIGIN / FLOOR_GAP 保持完全一致，
+  // 拖曳中才能在瀏覽器端即時算出跟伺服器落地後一樣的格線位置，放開滑鼠時畫面才不會跳動。
+  const GRID_STEP_X = CARD_W + 48;
+  const GRID_STEP_Y = CARD_H + 90;
+  const GRID_ORIGIN = 40;
+  const FLOOR_GAP = 70;
+
   function floorSortKey(floor) {
     if (floor === "Uncategorized") return [2, floor];
     const m = /^(\d+)/.exec(floor);
     if (m) return [0, parseInt(m[1], 10), floor];
     return [1, floor];
+  }
+
+  function compareFloorKeys(a, b) {
+    const ka = floorSortKey(a), kb = floorSortKey(b);
+    const len = Math.max(ka.length, kb.length);
+    for (let i = 0; i < len; i++) {
+      const av = ka[i], bv = kb[i];
+      if (av === bv) continue;
+      if (av === undefined) return -1;
+      if (bv === undefined) return 1;
+      return av < bv ? -1 : 1;
+    }
+    return 0;
+  }
+
+  // ---------------------------------------------------------------------
+  // 虛擬格線排版（跟 server.py 的 _grid_layout_all 完全對應的 JS 版本），
+  // 拖曳過程中用來即時預覽「放開後畫面會變怎樣」：同一樓層依樹狀深度分列，
+  // 同一列依目前 x 座標排序決定欄位，藉此讓其他卡片即時讓出/補回位置。
+  // ---------------------------------------------------------------------
+
+  function jsGridLayoutAll(nodes) {
+    const floors = new Map();
+    for (const n of nodes) {
+      const f = n.floor || "Uncategorized";
+      if (!floors.has(f)) floors.set(f, []);
+      floors.get(f).push(n);
+    }
+    let yCursor = GRID_ORIGIN;
+    const floorKeys = [...floors.keys()].sort(compareFloorKeys);
+    for (const floor of floorKeys) {
+      const members = floors.get(floor);
+      const byIdLocal = new Map(members.map((n) => [n.id, n]));
+      const depthCache = new Map();
+      const depthOf = (nodeId, guard = 0) => {
+        if (depthCache.has(nodeId)) return depthCache.get(nodeId);
+        if (guard > 30) return 0;
+        const node = byIdLocal.get(nodeId);
+        const parent = node ? node.parent : null;
+        if (!node || !parent || !byIdLocal.has(parent)) {
+          depthCache.set(nodeId, 0);
+          return 0;
+        }
+        const d = depthOf(parent, guard + 1) + 1;
+        depthCache.set(nodeId, d);
+        return d;
+      };
+      const rows = new Map();
+      for (const n of members) {
+        const d = depthOf(n.id);
+        if (!rows.has(d)) rows.set(d, []);
+        rows.get(d).push(n);
+      }
+      const maxDepth = rows.size ? Math.max(...rows.keys()) : 0;
+      for (let depth = 0; depth <= maxDepth; depth++) {
+        const rowNodes = rows.get(depth) || [];
+        rowNodes.sort((a, b) => {
+          const ax = a.x != null ? a.x : Infinity;
+          const bx = b.x != null ? b.x : Infinity;
+          if (ax !== bx) return ax - bx;
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        });
+        rowNodes.forEach((n, col) => {
+          n.x = GRID_ORIGIN + col * GRID_STEP_X;
+          n.y = yCursor + depth * GRID_STEP_Y;
+        });
+      }
+      yCursor += (maxDepth + 1) * GRID_STEP_Y + FLOOR_GAP;
+    }
+  }
+
+  function computeFloorBoxes(nodes, excludeId) {
+    const boxes = new Map();
+    for (const n of nodes) {
+      if (n.id === excludeId) continue;
+      const f = n.floor || "Uncategorized";
+      const b = boxes.get(f) || { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+      b.x0 = Math.min(b.x0, n.x);
+      b.y0 = Math.min(b.y0, n.y);
+      b.x1 = Math.max(b.x1, n.x + CARD_W);
+      b.y1 = Math.max(b.y1, n.y + CARD_H);
+      boxes.set(f, b);
+    }
+    return boxes;
+  }
+
+  function assignFloorByPosition(boxes, target) {
+    if (!boxes.size) return target.floor || "Uncategorized";
+    const cx = target.x + CARD_W / 2, cy = target.y + CARD_H / 2;
+    let bestFloor = target.floor, bestDist = Infinity;
+    for (const [floor, b] of boxes) {
+      const dx = Math.max(b.x0 - cx, 0, cx - b.x1);
+      const dy = Math.max(b.y0 - cy, 0, cy - b.y1);
+      const dist = dx * dx + dy * dy;
+      if (dist < bestDist) { bestDist = dist; bestFloor = floor; }
+    }
+    return bestFloor;
+  }
+
+  function edgeStyle(connType) {
+    const t = (connType || "").toUpperCase();
+    if (t.includes("POE")) return { color: COLOR.ext, dash: "" };
+    if (t.includes("WIFI") || t.includes("WI-FI")) return { color: COLOR.wifi, dash: "5 4" };
+    if (t.includes("CAT") || t.includes("有線") || t.includes("ETHERNET")) return { color: COLOR.gw, dash: "" };
+    return { color: COLOR.muted, dash: "" };
+  }
+
+  // 算出所有連線的幾何資料（含並排車道 midY）。nodes 裡每個節點的 x/y 就當螢幕座標直接用
+  // （TOPO_SCALE=1），拖曳預覽時也是呼叫這個函式，所以連線會跟著卡片即時重新計算。
+  function computeEdges(nodes, byId) {
+    const pos = (n) => ({ x: n.x || 0, y: n.y || 0 });
+    const childrenByParent = new Map();
+    for (const n of nodes) {
+      if (!n.parent || !byId.has(n.parent)) continue;
+      if (!childrenByParent.has(n.parent)) childrenByParent.set(n.parent, []);
+      childrenByParent.get(n.parent).push(n);
+    }
+    for (const kids of childrenByParent.values()) {
+      kids.sort((a, b) => pos(a).x - pos(b).x);
+    }
+
+    const edges = [];
+    for (const n of nodes) {
+      if (!n.parent || !byId.has(n.parent)) continue;
+      const parent = byId.get(n.parent);
+      const pp = pos(parent), cp = pos(n);
+      const siblings = childrenByParent.get(n.parent);
+      const idx = siblings.indexOf(n);
+      const fanX = siblings.length > 1
+        ? pp.x + 20 + ((CARD_W - 40) * idx) / (siblings.length - 1)
+        : pp.x + CARD_W / 2;
+      edges.push({
+        parentId: n.parent, childId: n.id,
+        x1: fanX, y1: pp.y + CARD_H,
+        x2: cp.x + CARD_W / 2, y2: cp.y,
+        style: edgeStyle(n.connection_type), portLabel: n.port_label,
+      });
+    }
+
+    const laneGroups = new Map();
+    for (const e of edges) {
+      const key = Math.round(e.y1);
+      if (!laneGroups.has(key)) laneGroups.set(key, []);
+      laneGroups.get(key).push(e);
+    }
+    for (const group of laneGroups.values()) {
+      group.sort((a, b) => a.x2 - b.x2);
+      const gap = Math.max(group[0].y2 - group[0].y1, 20);
+      const lanePitch = gap / (group.length + 1);
+      group.forEach((e, i) => {
+        e.midY = Math.round(e.y1 + lanePitch * (i + 1)) + 0.5;
+      });
+    }
+    return edges;
+  }
+
+  function edgesToSvgInner(edges) {
+    let svgInner = "";
+    for (const e of edges) {
+      const dashAttr = e.style.dash ? ` stroke-dasharray="${e.style.dash}"` : "";
+      let inner = `<path d="M${e.x1},${e.y1} L${e.x1},${e.midY} L${e.x2},${e.midY} L${e.x2},${e.y2}" fill="none" stroke="${e.style.color}" stroke-width="2.4"${dashAttr}/>`;
+      if (e.portLabel) {
+        const lx = (e.x1 + e.x2) / 2, ly = e.midY;
+        inner += `<text x="${lx}" y="${ly}" text-anchor="middle" dominant-baseline="middle" class="topo-edge-label" paint-order="stroke" stroke="var(--surface)" stroke-width="4">${escapeXml(e.portLabel)}</text>`;
+      }
+      svgInner += `<g class="topo-edge" data-parent="${escapeXml(e.parentId)}" data-child="${escapeXml(e.childId)}">${inner}</g>`;
+    }
+    return svgInner;
   }
 
   function renderTopology(nodes) {
@@ -405,10 +594,7 @@
       if (!floors.has(key)) floors.set(key, []);
       floors.get(key).push(n);
     }
-    const floorKeys = [...floors.keys()].sort((a, b) => {
-      const ka = floorSortKey(a), kb = floorSortKey(b);
-      return ka < kb ? -1 : ka > kb ? 1 : 0;
-    });
+    const floorKeys = [...floors.keys()].sort(compareFloorKeys);
     if (floorKeys.length > 1) {
       for (const key of floorKeys) {
         const members = floors.get(key);
@@ -442,72 +628,9 @@
     svg.setAttribute("width", maxX + TOPO_PAD);
     svg.setAttribute("height", maxY + TOPO_PAD);
 
-    const childrenByParent = new Map();
-    for (const n of nodes) {
-      if (!n.parent || !byId.has(n.parent)) continue;
-      if (!childrenByParent.has(n.parent)) childrenByParent.set(n.parent, []);
-      childrenByParent.get(n.parent).push(n);
-    }
-    for (const kids of childrenByParent.values()) {
-      kids.sort((a, b) => pos(a).x - pos(b).x);
-    }
-
-    function edgeStyle(connType) {
-      const t = (connType || "").toUpperCase();
-      if (t.includes("POE")) return { color: COLOR.ext, dash: "" };
-      if (t.includes("WIFI") || t.includes("WI-FI")) return { color: COLOR.wifi, dash: "5 4" };
-      if (t.includes("CAT") || t.includes("有線") || t.includes("ETHERNET")) return { color: COLOR.gw, dash: "" };
-      return { color: COLOR.muted, dash: "" };
-    }
-
-    // 先把每條邊的幾何資料算出來，同一段「上下兩列之間的空隙」如果同時有好幾條邊要
-    // 經過，各自分配一條專屬的水平「車道」（lane），避免大家的橫線疊在同一個 y 上、
-    // 分不出到底有幾條線；車道依上層座標分組（同一組代表同一段上下列間的空隙），
-    // 組內再依子節點 x 排序分配，讓並排的線看起來左右有規律、不會互相穿插纏繞。
-    const edges = [];
-    for (const n of nodes) {
-      if (!n.parent || !byId.has(n.parent)) continue;
-      const parent = byId.get(n.parent);
-      const pp = pos(parent), cp = pos(n);
-      const siblings = childrenByParent.get(n.parent);
-      const idx = siblings.indexOf(n);
-      const fanX = siblings.length > 1
-        ? pp.x + 20 + ((CARD_W - 40) * idx) / (siblings.length - 1)
-        : pp.x + CARD_W / 2;
-      edges.push({
-        parentId: n.parent, childId: n.id,
-        x1: fanX, y1: pp.y + CARD_H,
-        x2: cp.x + CARD_W / 2, y2: cp.y,
-        style: edgeStyle(n.connection_type), portLabel: n.port_label,
-      });
-    }
-
-    const laneGroups = new Map(); // key: 這段空隙的上緣 y → 這一組所有邊
-    for (const e of edges) {
-      const key = Math.round(e.y1);
-      if (!laneGroups.has(key)) laneGroups.set(key, []);
-      laneGroups.get(key).push(e);
-    }
-    for (const group of laneGroups.values()) {
-      group.sort((a, b) => a.x2 - b.x2);
-      const gap = Math.max(group[0].y2 - group[0].y1, 20);
-      const lanePitch = gap / (group.length + 1);
-      group.forEach((e, i) => {
-        e.midY = Math.round(e.y1 + lanePitch * (i + 1)) + 0.5; // +0.5 避免抗鋸齒糊成兩條淡線
-      });
-    }
-
-    let svgInner = "";
-    for (const e of edges) {
-      const dashAttr = e.style.dash ? ` stroke-dasharray="${e.style.dash}"` : "";
-      let inner = `<path d="M${e.x1},${e.y1} L${e.x1},${e.midY} L${e.x2},${e.midY} L${e.x2},${e.y2}" fill="none" stroke="${e.style.color}" stroke-width="2.4"${dashAttr}/>`;
-      if (e.portLabel) {
-        const lx = (e.x1 + e.x2) / 2, ly = e.midY;
-        inner += `<text x="${lx}" y="${ly}" text-anchor="middle" dominant-baseline="middle" class="topo-edge-label" paint-order="stroke" stroke="var(--surface)" stroke-width="4">${escapeXml(e.portLabel)}</text>`;
-      }
-      svgInner += `<g class="topo-edge" data-parent="${escapeXml(e.parentId)}" data-child="${escapeXml(e.childId)}">${inner}</g>`;
-    }
-    svg.innerHTML = svgInner;
+    // 連線幾何（含並排車道）跟拖曳預覽共用同一套算法，見 computeEdges()／edgesToSvgInner()。
+    const edges = computeEdges(nodes, byId);
+    svg.innerHTML = edgesToSvgInner(edges);
     canvas.appendChild(svg);
 
     // 節點卡片
@@ -527,7 +650,7 @@
       const ipText = ipBase ? (n.avg_ms != null ? `${ipBase} · ${fmt(n.avg_ms, 0)}ms` : ipBase) : (n.location || "—");
       meta.appendChild(el("span", { class: "topo-ip" }, [document.createTextNode(ipText)]));
       card.appendChild(meta);
-      attachDragHandlers(card, n);
+      attachDragHandlers(card, n, { cardEls, svg });
       canvas.appendChild(card);
       cardEls.set(n.id, card);
     }
@@ -553,11 +676,22 @@
         for (const g of svg.querySelectorAll(".topo-edge")) {
           const related = keepIds.has(g.dataset.parent) && keepIds.has(g.dataset.child);
           g.classList.toggle("topo-dim", !related);
+          const path = g.querySelector("path");
+          if (g.dataset.child === n.id) {
+            // 這條線通往「上層」設備：紅色
+            path.style.stroke = "var(--status-critical)";
+          } else if (g.dataset.parent === n.id) {
+            // 這條線通往「下層」設備：綠色
+            path.style.stroke = "var(--status-good)";
+          }
         }
       });
       card.addEventListener("mouseleave", () => {
         for (const el2 of cardEls.values()) el2.classList.remove("topo-dim");
-        for (const g of svg.querySelectorAll(".topo-edge")) g.classList.remove("topo-dim");
+        for (const g of svg.querySelectorAll(".topo-edge")) {
+          g.classList.remove("topo-dim");
+          g.querySelector("path").style.stroke = ""; // 清掉 hover 蓋上去的顏色，恢復連線類型原本的顏色
+        }
       });
     }
   }
@@ -570,7 +704,12 @@
   let isDragging = false;
   const CLICK_THRESHOLD_PX = 5;
 
-  function attachDragHandlers(card, node) {
+  // 拖曳中即時預覽「放開後畫面會變怎樣」（跟 iOS 主畫面移動 App 一樣的手感）：
+  // 用 jsGridLayoutAll 在瀏覽器端算出跟伺服器一致的格線結果，被讓位的卡片即時滑到新位置、
+  // 連線即時重畫；用 requestAnimationFrame 節流，每禎只做一次計算跟 DOM 寫入，拖曳才會流暢。
+  function attachDragHandlers(card, node, ctx) {
+    const { cardEls, svg } = ctx;
+
     card.addEventListener("pointerdown", (e) => {
       if (e.button !== undefined && e.button !== 0) return;
       e.preventDefault();
@@ -582,6 +721,51 @@
       card.setPointerCapture(e.pointerId);
       isDragging = true;
 
+      // 拖曳預覽專用的快照：只複製排版需要的欄位，不動到 latestTopologyNodes 本身。
+      const previewNodes = latestTopologyNodes.map((n) => ({
+        id: n.id, parent: n.parent, floor: n.floor, x: n.x, y: n.y,
+      }));
+      const previewById = new Map(previewNodes.map((n) => [n.id, n]));
+      const draggedPreview = previewById.get(node.id);
+      // 樓層外框只算一次：拖曳中只有這一張卡片的位置在變，其他卡片的樓層範圍不會變。
+      const floorBoxes = computeFloorBoxes(previewNodes, node.id);
+      const appliedPos = new Map(previewNodes.map((n) => [n.id, { x: n.x, y: n.y }]));
+
+      let rafId = null;
+      let lastClientX = startClientX;
+      let lastClientY = startClientY;
+
+      function applyPreview() {
+        rafId = null;
+        const dx = lastClientX - startClientX;
+        const dy = lastClientY - startClientY;
+        const rawX = (startLeft + dx) / TOPO_SCALE;
+        const rawY = (startTop + dy) / TOPO_SCALE;
+
+        draggedPreview.x = rawX;
+        draggedPreview.y = rawY;
+        draggedPreview.floor = assignFloorByPosition(floorBoxes, draggedPreview);
+        jsGridLayoutAll(previewNodes); // 決定其他卡片要不要讓位，以及這張卡片落在哪一欄哪一列
+
+        for (const n of previewNodes) {
+          if (n.id === node.id) continue; // 拖曳中的這張卡片本身用滑鼠實際位置顯示，手感才會跟著游標
+          const applied = appliedPos.get(n.id);
+          if (applied.x === n.x && applied.y === n.y) continue;
+          const otherCard = cardEls.get(n.id);
+          if (!otherCard) continue;
+          otherCard.style.left = `${n.x}px`;
+          otherCard.style.top = `${n.y}px`;
+          applied.x = n.x;
+          applied.y = n.y;
+        }
+
+        // 連線即時重畫：拖曳中的這張卡片的線用滑鼠實際座標（線跟著手感即時動），
+        // 其他卡片的線用剛讓位好的格線座標。
+        const renderNodes = previewNodes.map((n) => (n.id === node.id ? { ...n, x: rawX, y: rawY } : n));
+        const renderById = new Map(renderNodes.map((n) => [n.id, n]));
+        svg.innerHTML = edgesToSvgInner(computeEdges(renderNodes, renderById));
+      }
+
       function onMove(ev) {
         const dx = ev.clientX - startClientX;
         const dy = ev.clientY - startClientY;
@@ -589,10 +773,12 @@
           moved = true;
           card.classList.add("dragging");
         }
-        if (moved) {
-          card.style.left = `${startLeft + dx}px`;
-          card.style.top = `${startTop + dy}px`;
-        }
+        if (!moved) return;
+        card.style.left = `${startLeft + dx}px`;
+        card.style.top = `${startTop + dy}px`;
+        lastClientX = ev.clientX;
+        lastClientY = ev.clientY;
+        if (rafId === null) rafId = requestAnimationFrame(applyPreview);
       }
 
       async function onUp(ev) {
@@ -601,15 +787,33 @@
         card.removeEventListener("pointercancel", onUp);
         card.classList.remove("dragging");
         isDragging = false;
+        if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
 
         if (!moved) {
           openNodeModal(node);
           return;
         }
+
         const dx = ev.clientX - startClientX;
         const dy = ev.clientY - startClientY;
         const newX = (startLeft + dx) / TOPO_SCALE;
         const newY = (startTop + dy) / TOPO_SCALE;
+
+        // 放開滑鼠當下先照本地算好的結果讓所有卡片落到最終格線位置，
+        // 伺服器回應（跑同一套演算法）理論上會是同一組座標，畫面才不會再跳一次。
+        draggedPreview.x = newX;
+        draggedPreview.y = newY;
+        draggedPreview.floor = assignFloorByPosition(floorBoxes, draggedPreview);
+        jsGridLayoutAll(previewNodes);
+        card.style.left = `${draggedPreview.x}px`;
+        card.style.top = `${draggedPreview.y}px`;
+        for (const n of previewNodes) {
+          if (n.id === node.id) continue;
+          const otherCard = cardEls.get(n.id);
+          if (otherCard) { otherCard.style.left = `${n.x}px`; otherCard.style.top = `${n.y}px`; }
+        }
+        svg.innerHTML = edgesToSvgInner(computeEdges(previewNodes, previewById));
+
         try {
           const result = await postJson("/api/topology/node", {
             id: node.id, old_id: node.id, x: newX, y: newY,
@@ -813,10 +1017,39 @@
     bandwidthChart.render();
   });
 
+  // ---------------------------------------------------------------------
+  // 自動刷新頻率設定（存在瀏覽器 localStorage，重開網頁也會記住）
+  // ---------------------------------------------------------------------
+
+  let pollTimer = null;
+
+  function restartPollLoop() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(poll, getPollMs());
+  }
+
+  function initRefreshInterval() {
+    const select = document.getElementById("refreshIntervalSelect");
+    const current = getPollMs();
+    const hasOption = [...select.options].some((o) => Number(o.value) === current);
+    if (!hasOption) {
+      // 舊資料或手動改過 localStorage 存了非清單裡的值，動態補一個選項，不要默默改掉使用者存的秒數
+      const opt = el("option", { value: String(current) }, [document.createTextNode(String(current / 1000))]);
+      select.appendChild(opt);
+    }
+    select.value = String(current);
+    select.addEventListener("change", () => {
+      const ms = parseInt(select.value, 10);
+      setPollMs(ms);
+      restartPollLoop();
+    });
+  }
+
   initTabs();
   initNodeModal();
+  initRefreshInterval();
   document.getElementById("refreshBtn").addEventListener("click", () => poll(true));
 
   poll();
-  setInterval(poll, POLL_MS);
+  restartPollLoop();
 })();

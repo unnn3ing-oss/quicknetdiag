@@ -90,6 +90,7 @@
         <h2>網路架構</h2>
         <div style="display:flex;align-items:center;gap:14px">
           <span class="panel-hint" id="topoFileHint">拖曳卡片調整位置．點擊卡片編輯</span>
+          <input type="search" id="topoSearchInput" class="topo-search" placeholder="搜尋名稱／IP…" />
           <button class="btn btn-small" id="addNodeBtn">＋ 新增設備</button>
         </div>
       </div>
@@ -108,6 +109,16 @@
   <!-- ============ 第 2 頁：即時監控 ============ -->
   <section class="page" id="page-monitor" style="grid-column:1/-1">
     <div class="grid" style="padding:0;max-width:none;margin:0">
+
+      <div class="chart-range-bar" style="grid-column:1/-1">
+        <span>顯示範圍</span>
+        <div class="chart-range-group" id="chartRangeGroup">
+          <button class="chart-range-btn" data-range="900000">15分</button>
+          <button class="chart-range-btn" data-range="3600000">1小時</button>
+          <button class="chart-range-btn" data-range="21600000">6小時</button>
+          <button class="chart-range-btn" data-range="all">全部</button>
+        </div>
+      </div>
 
       <section class="panel chart-panel" aria-label="延遲趨勢">
         <div class="panel-head">
@@ -165,6 +176,22 @@
   <span>家用網路醫生 · 本機執行，資料不會上傳</span>
   <span id="connError" class="conn-error" hidden>連不上伺服器，重試中…</span>
 </footer>
+
+<!-- ============ Toast 提示（取代原生 alert） ============ -->
+<div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+<!-- ============ 確認彈窗（取代原生 confirm） ============ -->
+<div class="modal-overlay" id="confirmOverlay" hidden>
+  <div class="modal-card confirm-card">
+    <p id="confirmMessage"></p>
+    <div class="modal-actions">
+      <div style="display:flex;gap:8px;margin-left:auto">
+        <button class="btn" id="confirmCancelBtn">取消</button>
+        <button class="btn btn-primary" id="confirmOkBtn">確定</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ============ 新增／編輯設備 Modal ============ -->
 <div class="modal-overlay" id="nodeModalOverlay" hidden>

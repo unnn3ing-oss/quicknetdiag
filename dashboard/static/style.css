@@ -353,6 +353,43 @@ body {
   color: var(--text-muted);
 }
 
+.topo-search {
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-primary);
+  width: 160px;
+}
+.topo-search:focus { outline: none; border-color: var(--series-gw); }
+
+.chart-range-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 4px 2px;
+}
+
+.chart-range-group { display: flex; gap: 6px; }
+
+.chart-range-btn {
+  font-family: var(--sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+.chart-range-btn:hover { border-color: var(--series-gw); }
+.chart-range-btn.active { background: var(--series-gw); border-color: var(--series-gw); color: #fff; }
+
 .legend {
   display: flex;
   gap: 14px;
@@ -513,7 +550,24 @@ canvas {
   letter-spacing: 0.06em;
   padding: 2px 8px;
   border-radius: 4px;
+  pointer-events: auto; /* 父層 .topo-floor-box 整體不接收滑鼠事件，收合按鈕要能點擊得單獨開回來 */
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
+
+.topo-floor-toggle {
+  font-family: var(--sans);
+  font-size: 0.7rem;
+  line-height: 1;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.topo-floor-box.collapsed { background: var(--surface-raised); }
 
 .topo-node {
   position: absolute;
@@ -651,6 +705,9 @@ canvas {
 .topo-edge { transition: opacity 0.15s ease; }
 .topo-edge.topo-dim { opacity: 0.15; }
 
+/* 搜尋設備時，符合關鍵字的卡片維持原本亮度＋外框強調，其餘降低不透明度 */
+.topo-node.topo-match { box-shadow: 0 0 0 3px rgba(42, 120, 214, 0.35), 0 1px 3px rgba(11, 11, 11, 0.06); }
+
 /* ---------- 新增／編輯設備 modal ---------- */
 
 .modal-overlay {
@@ -723,6 +780,42 @@ canvas {
   align-items: center;
   margin-top: 6px;
 }
+
+#confirmOverlay { z-index: 150; } /* 刪除確認彈窗可能疊在編輯設備 modal 之上，z-index 要更高才不會被蓋住點不到 */
+.confirm-card { width: 340px; }
+.confirm-card p { font-size: 0.875rem; color: var(--text-primary); margin: 0 0 18px; line-height: 1.5; }
+
+/* ---------- Toast 提示（取代原生 alert，不擋畫面、自動消失） ---------- */
+
+.toast-container {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  font-family: var(--sans);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--status-critical);
+  border-radius: 8px;
+  padding: 10px 16px;
+  box-shadow: 0 8px 20px rgba(11, 11, 11, 0.2);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  max-width: 320px;
+}
+
+.toast.toast-show { opacity: 1; transform: translateY(0); }
+.toast.toast-info { background: var(--text-primary); }
+.toast.toast-success { background: var(--status-good); }
 
 /* ---------- responsive ---------- */
 

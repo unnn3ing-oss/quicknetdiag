@@ -95,6 +95,44 @@
   }
 
   // ---------------------------------------------------------------------
+  // Toast 提示／自訂確認彈窗（取代原生 alert()/confirm()，不擋畫面、風格統一）
+  // ---------------------------------------------------------------------
+
+  function showToast(message, type = "error") {
+    const container = document.getElementById("toastContainer");
+    const toast = el("div", { class: `toast toast-${type}` }, [document.createTextNode(message)]);
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add("toast-show"));
+    setTimeout(() => {
+      toast.classList.remove("toast-show");
+      setTimeout(() => toast.remove(), 250);
+    }, 3500);
+  }
+
+  function showConfirm(message) {
+    return new Promise((resolve) => {
+      const overlay = document.getElementById("confirmOverlay");
+      document.getElementById("confirmMessage").textContent = message;
+      overlay.hidden = false;
+      const okBtn = document.getElementById("confirmOkBtn");
+      const cancelBtn = document.getElementById("confirmCancelBtn");
+      function cleanup(result) {
+        overlay.hidden = true;
+        okBtn.removeEventListener("click", onOk);
+        cancelBtn.removeEventListener("click", onCancel);
+        overlay.removeEventListener("click", onOverlay);
+        resolve(result);
+      }
+      function onOk() { cleanup(true); }
+      function onCancel() { cleanup(false); }
+      function onOverlay(e) { if (e.target === overlay) cleanup(false); }
+      okBtn.addEventListener("click", onOk);
+      cancelBtn.addEventListener("click", onCancel);
+      overlay.addEventListener("click", onOverlay);
+    });
+  }
+
+  // ---------------------------------------------------------------------
   // 狀態列與數值卡
   // ---------------------------------------------------------------------
 
@@ -564,6 +602,25 @@
     return svgInner;
   }
 
+  let currentCardEls = new Map();
+  let currentSearchQuery = "";
+
+  const COLLAPSED_FLOORS_KEY = "netdiag_collapsed_floors";
+  const FLOOR_COLLAPSED_H = 40;
+
+  function loadCollapsedFloors() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(COLLAPSED_FLOORS_KEY) || "[]");
+      return new Set(Array.isArray(raw) ? raw : []);
+    } catch (e) {
+      return new Set();
+    }
+  }
+  function saveCollapsedFloors(set) {
+    try { localStorage.setItem(COLLAPSED_FLOORS_KEY, JSON.stringify([...set])); } catch (e) { /* 私密瀏覽模式存不了就算了 */ }
+  }
+  let collapsedFloors = loadCollapsedFloors();
+
   function renderTopology(nodes) {
     const root = document.getElementById("topologyRoot");
     root.innerHTML = "";
@@ -577,17 +634,8 @@
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const pos = (n) => ({ x: (n.x || 0) * TOPO_SCALE, y: (n.y || 0) * TOPO_SCALE });
 
-    let maxX = 0, maxY = 0;
-    for (const n of nodes) {
-      const p = pos(n);
-      maxX = Math.max(maxX, p.x + CARD_W);
-      maxY = Math.max(maxY, p.y + CARD_H);
-    }
-    const canvas = el("div", { class: "topo-canvas" });
-    canvas.style.width = `${maxX + TOPO_PAD}px`;
-    canvas.style.height = `${maxY + TOPO_PAD}px`;
-
-    // 樓層外框（同一層的設備框在一起，跟原圖一樣分區）
+    // 樓層分組＋收合換算：收合的樓層只留一條標題列高度，底下樓層要跟著往上補齊，
+    // 才不會留一大片空白（floorYShift 是「這個樓層要往上少掉的累積高度」）。
     const floors = new Map();
     for (const n of nodes) {
       const key = n.floor || "Uncategorized";
@@ -595,7 +643,12 @@
       floors.get(key).push(n);
     }
     const floorKeys = [...floors.keys()].sort(compareFloorKeys);
-    if (floorKeys.length > 1) {
+    const floorPad = 20, floorLabelH = 22;
+    const floorRawBox = new Map();
+    const floorYShift = new Map();
+    const floorUsedHeight = new Map();
+    {
+      let cumulativeShift = 0;
       for (const key of floorKeys) {
         const members = floors.get(key);
         let fx0 = Infinity, fy0 = Infinity, fx1 = -Infinity, fy1 = -Infinity;
@@ -606,15 +659,67 @@
           fx1 = Math.max(fx1, p.x + CARD_W);
           fy1 = Math.max(fy1, p.y + CARD_H);
         }
-        const pad = 20;
-        const box = el("div", { class: "topo-floor-box" });
-        box.style.left = `${fx0 - pad}px`;
-        box.style.top = `${fy0 - pad - 22}px`;
-        box.style.width = `${fx1 - fx0 + pad * 2}px`;
-        box.style.height = `${fy1 - fy0 + pad * 2 + 22}px`;
-        const label = el("div", { class: "topo-floor-label" }, [
-          document.createTextNode(FLOOR_LABELS[key] || key),
+        floorRawBox.set(key, { fx0, fy0, fx1, fy1 });
+        floorYShift.set(key, cumulativeShift);
+        const naturalHeight = (fy1 - fy0) + floorPad * 2 + floorLabelH;
+        const usedHeight = collapsedFloors.has(key) ? FLOOR_COLLAPSED_H : naturalHeight;
+        floorUsedHeight.set(key, usedHeight);
+        cumulativeShift += Math.max(naturalHeight - usedHeight, 0);
+      }
+    }
+
+    const visibleNodes = nodes.filter((n) => !collapsedFloors.has(n.floor || "Uncategorized"));
+    const shiftedNodes = visibleNodes.map((n) => {
+      const p = pos(n);
+      const shift = floorYShift.get(n.floor || "Uncategorized") || 0;
+      return { ...n, x: p.x, y: p.y - shift };
+    });
+    const shiftedById = new Map(shiftedNodes.map((n) => [n.id, n]));
+
+    let maxX = 0, maxY = 0;
+    for (const n of nodes) {
+      maxX = Math.max(maxX, pos(n).x + CARD_W);
+    }
+    if (floorKeys.length > 1) {
+      for (const key of floorKeys) {
+        const raw = floorRawBox.get(key);
+        const top = raw.fy0 - floorYShift.get(key) - floorPad - floorLabelH;
+        maxY = Math.max(maxY, top + floorUsedHeight.get(key));
+      }
+    } else {
+      for (const n of shiftedNodes) maxY = Math.max(maxY, n.y + CARD_H);
+    }
+
+    const canvas = el("div", { class: "topo-canvas" });
+    canvas.style.width = `${maxX + TOPO_PAD}px`;
+    canvas.style.height = `${maxY + TOPO_PAD}px`;
+
+    // 樓層外框（同一層的設備框在一起，跟原圖一樣分區），標籤旁的箭頭可以收合/展開
+    if (floorKeys.length > 1) {
+      for (const key of floorKeys) {
+        const members = floors.get(key);
+        const raw = floorRawBox.get(key);
+        const shift = floorYShift.get(key);
+        const isCollapsed = collapsedFloors.has(key);
+        const box = el("div", { class: `topo-floor-box${isCollapsed ? " collapsed" : ""}` });
+        box.style.left = `${raw.fx0 - floorPad}px`;
+        box.style.top = `${raw.fy0 - shift - floorPad - floorLabelH}px`;
+        box.style.width = `${raw.fx1 - raw.fx0 + floorPad * 2}px`;
+        box.style.height = `${floorUsedHeight.get(key)}px`;
+
+        const label = el("div", { class: "topo-floor-label" });
+        const toggleBtn = el("button", { class: "topo-floor-toggle", type: "button" }, [
+          document.createTextNode(isCollapsed ? "▸" : "▾"),
         ]);
+        toggleBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          if (isCollapsed) collapsedFloors.delete(key); else collapsedFloors.add(key);
+          saveCollapsedFloors(collapsedFloors);
+          renderTopology(latestTopologyNodes);
+        });
+        label.appendChild(toggleBtn);
+        const labelText = isCollapsed ? `${FLOOR_LABELS[key] || key}（${members.length} 台）` : (FLOOR_LABELS[key] || key);
+        label.appendChild(document.createTextNode(labelText));
         box.appendChild(label);
         canvas.appendChild(box);
       }
@@ -623,24 +728,24 @@
     // 連線（含 port 標籤），畫在節點卡片底下。同一個父節點底下的多個子節點，
     // 從父卡片底邊不同的 x 位置分別出發（fan-out），避免全部疊在正中央同一點、
     // 讓線條彼此糾纏；顏色/線型依連線類型區分（有線／PoE／WiFi），方便一眼分辨。
+    // 收合樓層裡的設備不畫卡片，通往/來自它們的連線也一併跳過。
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("class", "topo-svg");
     svg.setAttribute("width", maxX + TOPO_PAD);
     svg.setAttribute("height", maxY + TOPO_PAD);
 
     // 連線幾何（含並排車道）跟拖曳預覽共用同一套算法，見 computeEdges()／edgesToSvgInner()。
-    const edges = computeEdges(nodes, byId);
+    const edges = computeEdges(shiftedNodes, shiftedById);
     svg.innerHTML = edgesToSvgInner(edges);
     canvas.appendChild(svg);
 
-    // 節點卡片
+    // 節點卡片（只畫沒被收合的樓層）
     const cardEls = new Map();
-    for (const n of nodes) {
-      const p = pos(n);
+    for (const n of shiftedNodes) {
       const up = n.ip ? n.up : null;
       const card = el("div", { class: "topo-node", "data-up": String(up), "data-id": n.id });
-      card.style.left = `${p.x}px`;
-      card.style.top = `${p.y}px`;
+      card.style.left = `${n.x}px`;
+      card.style.top = `${n.y}px`;
       card.style.width = `${CARD_W}px`;
       card.appendChild(el("span", { class: "led" }));
       card.appendChild(el("span", { class: "topo-icon", html: TOPO_ICONS[n.type] || TOPO_ICONS.default }));
@@ -650,18 +755,53 @@
       const ipText = ipBase ? (n.avg_ms != null ? `${ipBase} · ${fmt(n.avg_ms, 0)}ms` : ipBase) : (n.location || "—");
       meta.appendChild(el("span", { class: "topo-ip" }, [document.createTextNode(ipText)]));
       card.appendChild(meta);
-      attachDragHandlers(card, n, { cardEls, svg });
+      attachDragHandlers(card, n, { cardEls, svg, floorYShift });
       canvas.appendChild(card);
       cardEls.set(n.id, card);
     }
 
-    attachHoverFocus(nodes, cardEls, svg);
+    attachHoverFocus(shiftedNodes, cardEls, svg);
+
+    currentCardEls = cardEls;
+    applySearchFilter(false); // 重新套用目前的搜尋篩選（不捲動），輪詢重繪才不會把高亮洗掉
 
     root.appendChild(canvas);
   }
 
+  // 架構圖搜尋：符合名稱／設備編號／IP 關鍵字的卡片維持亮度＋外框強調，其餘降低不透明度。
+  // shouldScroll 只有在使用者輸入當下才 true，輪詢重繪時重新套用同一個篩選不應該又捲動一次。
+  function applySearchFilter(shouldScroll) {
+    const q = currentSearchQuery.trim().toLowerCase();
+    if (!q) {
+      for (const c of currentCardEls.values()) c.classList.remove("topo-dim", "topo-match");
+      return;
+    }
+    const byId = new Map(latestTopologyNodes.map((n) => [n.id, n]));
+    let firstMatch = null;
+    for (const [id, card] of currentCardEls) {
+      const n = byId.get(id);
+      const haystack = `${n && n.name ? n.name : ""} ${id} ${n && (n.ip_display || n.ip) ? (n.ip_display || n.ip) : ""}`.toLowerCase();
+      const isMatch = haystack.includes(q);
+      card.classList.toggle("topo-match", isMatch);
+      card.classList.toggle("topo-dim", !isMatch);
+      if (isMatch && !firstMatch) firstMatch = card;
+    }
+    if (shouldScroll && firstMatch) {
+      firstMatch.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    }
+  }
+
+  function initTopoSearch() {
+    const input = document.getElementById("topoSearchInput");
+    input.addEventListener("input", () => {
+      currentSearchQuery = input.value;
+      applySearchFilter(true);
+    });
+  }
+
   // 滑鼠移到一張卡片上：只保留它本身、它的上層設備、它的下層設備（直接父子，不含
   // 更上/更下一層）跟連接這幾個的線條維持原本亮度，其餘卡片與線條降低不透明度。
+  // 搜尋中的時候讓 hover 不介入，避免跟搜尋篩選的高亮/降低不透明度互相打架。
   function attachHoverFocus(nodes, cardEls, svg) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
     for (const n of nodes) {
@@ -670,6 +810,7 @@
       const keepIds = new Set([n.id, n.parent, ...childIds].filter(Boolean));
 
       card.addEventListener("mouseenter", () => {
+        if (currentSearchQuery.trim()) return;
         for (const [id, el2] of cardEls) {
           el2.classList.toggle("topo-dim", !keepIds.has(id));
         }
@@ -687,6 +828,7 @@
         }
       });
       card.addEventListener("mouseleave", () => {
+        if (currentSearchQuery.trim()) return; // hover 進入時就跳過了，離開時也不該去洗掉搜尋篩選套用的樣式
         for (const el2 of cardEls.values()) el2.classList.remove("topo-dim");
         for (const g of svg.querySelectorAll(".topo-edge")) {
           g.classList.remove("topo-dim");
@@ -703,12 +845,17 @@
   let latestTopologyNodes = [];
   let isDragging = false;
   const CLICK_THRESHOLD_PX = 5;
+  const CLICK_THRESHOLD_PX_TOUCH = 12; // 觸控手指較粗，閾值太小會把「點擊編輯」誤判成「拖曳」
 
   // 拖曳中即時預覽「放開後畫面會變怎樣」（跟 iOS 主畫面移動 App 一樣的手感）：
   // 用 jsGridLayoutAll 在瀏覽器端算出跟伺服器一致的格線結果，被讓位的卡片即時滑到新位置、
   // 連線即時重畫；用 requestAnimationFrame 節流，每禎只做一次計算跟 DOM 寫入，拖曳才會流暢。
   function attachDragHandlers(card, node, ctx) {
-    const { cardEls, svg } = ctx;
+    const { cardEls, svg, floorYShift } = ctx;
+    // 卡片實際畫在螢幕上的位置，可能因為「上面有樓層被收合」而比真實座標往上位移了一段
+    // （floorYShift，只影響垂直方向）。拖曳判斷格線/樓層都要用真實座標算，畫面顯示才用位移過的座標，
+    // 這兩者要分開算，不然收合樓層時拖曳會把錯誤（少掉位移量）的 y 存回檔案。
+    const shiftOf = (floor) => floorYShift.get(floor || "Uncategorized") || 0;
 
     card.addEventListener("pointerdown", (e) => {
       if (e.button !== undefined && e.button !== 0) return;
@@ -716,12 +863,15 @@
       const startClientX = e.clientX;
       const startClientY = e.clientY;
       const startLeft = parseFloat(card.style.left) || 0;
-      const startTop = parseFloat(card.style.top) || 0;
+      const startTop = parseFloat(card.style.top) || 0; // 顯示座標
+      const startTopTrue = startTop + shiftOf(node.floor); // 真實（未位移）座標
       let moved = false;
+      const clickThreshold = e.pointerType === "touch" ? CLICK_THRESHOLD_PX_TOUCH : CLICK_THRESHOLD_PX;
       card.setPointerCapture(e.pointerId);
       isDragging = true;
 
       // 拖曳預覽專用的快照：只複製排版需要的欄位，不動到 latestTopologyNodes 本身。
+      // 這裡的 x/y 全部都是真實座標（跟伺服器認知一致），跟畫面顯示座標分開處理。
       const previewNodes = latestTopologyNodes.map((n) => ({
         id: n.id, parent: n.parent, floor: n.floor, x: n.x, y: n.y,
       }));
@@ -740,28 +890,31 @@
         const dx = lastClientX - startClientX;
         const dy = lastClientY - startClientY;
         const rawX = (startLeft + dx) / TOPO_SCALE;
-        const rawY = (startTop + dy) / TOPO_SCALE;
+        const rawYTrue = (startTopTrue + dy) / TOPO_SCALE;
 
         draggedPreview.x = rawX;
-        draggedPreview.y = rawY;
+        draggedPreview.y = rawYTrue;
         draggedPreview.floor = assignFloorByPosition(floorBoxes, draggedPreview);
         jsGridLayoutAll(previewNodes); // 決定其他卡片要不要讓位，以及這張卡片落在哪一欄哪一列
 
         for (const n of previewNodes) {
           if (n.id === node.id) continue; // 拖曳中的這張卡片本身用滑鼠實際位置顯示，手感才會跟著游標
+          const dispY = n.y - shiftOf(n.floor);
           const applied = appliedPos.get(n.id);
-          if (applied.x === n.x && applied.y === n.y) continue;
+          if (applied.x === n.x && applied.y === dispY) continue;
           const otherCard = cardEls.get(n.id);
           if (!otherCard) continue;
           otherCard.style.left = `${n.x}px`;
-          otherCard.style.top = `${n.y}px`;
+          otherCard.style.top = `${dispY}px`;
           applied.x = n.x;
-          applied.y = n.y;
+          applied.y = dispY;
         }
 
-        // 連線即時重畫：拖曳中的這張卡片的線用滑鼠實際座標（線跟著手感即時動），
-        // 其他卡片的線用剛讓位好的格線座標。
-        const renderNodes = previewNodes.map((n) => (n.id === node.id ? { ...n, x: rawX, y: rawY } : n));
+        // 連線即時重畫：拖曳中的這張卡片的線用滑鼠實際「畫面」座標（線跟著手感即時動），
+        // 其他卡片的線用剛讓位好的格線座標換算回畫面座標（扣掉各自樓層的收合位移）。
+        const renderNodes = previewNodes.map((n) => (
+          n.id === node.id ? { ...n, x: startLeft + dx, y: startTop + dy } : { ...n, y: n.y - shiftOf(n.floor) }
+        ));
         const renderById = new Map(renderNodes.map((n) => [n.id, n]));
         svg.innerHTML = edgesToSvgInner(computeEdges(renderNodes, renderById));
       }
@@ -769,7 +922,7 @@
       function onMove(ev) {
         const dx = ev.clientX - startClientX;
         const dy = ev.clientY - startClientY;
-        if (!moved && Math.hypot(dx, dy) > CLICK_THRESHOLD_PX) {
+        if (!moved && Math.hypot(dx, dy) > clickThreshold) {
           moved = true;
           card.classList.add("dragging");
         }
@@ -797,7 +950,7 @@
         const dx = ev.clientX - startClientX;
         const dy = ev.clientY - startClientY;
         const newX = (startLeft + dx) / TOPO_SCALE;
-        const newY = (startTop + dy) / TOPO_SCALE;
+        const newY = (startTopTrue + dy) / TOPO_SCALE; // 真實座標，存檔用這個
 
         // 放開滑鼠當下先照本地算好的結果讓所有卡片落到最終格線位置，
         // 伺服器回應（跑同一套演算法）理論上會是同一組座標，畫面才不會再跳一次。
@@ -806,13 +959,14 @@
         draggedPreview.floor = assignFloorByPosition(floorBoxes, draggedPreview);
         jsGridLayoutAll(previewNodes);
         card.style.left = `${draggedPreview.x}px`;
-        card.style.top = `${draggedPreview.y}px`;
+        card.style.top = `${draggedPreview.y - shiftOf(draggedPreview.floor)}px`;
         for (const n of previewNodes) {
           if (n.id === node.id) continue;
           const otherCard = cardEls.get(n.id);
-          if (otherCard) { otherCard.style.left = `${n.x}px`; otherCard.style.top = `${n.y}px`; }
+          if (otherCard) { otherCard.style.left = `${n.x}px`; otherCard.style.top = `${n.y - shiftOf(n.floor)}px`; }
         }
-        svg.innerHTML = edgesToSvgInner(computeEdges(previewNodes, previewById));
+        const settledNodes = previewNodes.map((n) => ({ ...n, y: n.y - shiftOf(n.floor) }));
+        svg.innerHTML = edgesToSvgInner(computeEdges(settledNodes, new Map(settledNodes.map((n) => [n.id, n]))));
 
         try {
           const result = await postJson("/api/topology/node", {
@@ -821,7 +975,7 @@
           latestTopologyNodes = result.topology || [];
           renderTopology(latestTopologyNodes);
         } catch (err) {
-          alert(`移動失敗：${err.message}`);
+          showToast(`移動失敗：${err.message}`);
           renderTopology(latestTopologyNodes); // 失敗就退回原本位置
         }
       }
@@ -920,7 +1074,8 @@
 
   async function deleteNodeFromModal() {
     if (!editingOldId) return;
-    if (!confirm(`確定要刪除設備「${editingOldId}」嗎？它底下的子設備會過繼給它的上層設備。`)) return;
+    const ok = await showConfirm(`確定要刪除設備「${editingOldId}」嗎？它底下的子設備會過繼給它的上層設備。`);
+    if (!ok) return;
     try {
       const result = await postJson("/api/topology/node/delete", { id: editingOldId });
       latestTopologyNodes = result.topology || [];
@@ -977,6 +1132,52 @@
     "Mbps"
   );
 
+  // ---------------------------------------------------------------------
+  // 圖表顯示範圍（15分／1小時／6小時／全部），存在 localStorage
+  // ---------------------------------------------------------------------
+
+  const CHART_RANGE_KEY = "netdiag_chart_range";
+  let latestHistory = [];
+
+  function getChartRange() {
+    try { return localStorage.getItem(CHART_RANGE_KEY) || "all"; } catch (e) { return "all"; }
+  }
+  function setChartRange(v) {
+    try { localStorage.setItem(CHART_RANGE_KEY, v); } catch (e) { /* 私密瀏覽模式存不了就算了 */ }
+  }
+
+  function filterHistoryByRange(history, range) {
+    if (range === "all" || !history || !history.length) return history;
+    const rangeMs = Number(range);
+    if (!Number.isFinite(rangeMs)) return history;
+    const latestT = new Date(history[history.length - 1].t).getTime();
+    if (!Number.isFinite(latestT)) return history;
+    return history.filter((p) => {
+      const t = new Date(p.t).getTime();
+      return Number.isFinite(t) && latestT - t <= rangeMs;
+    });
+  }
+
+  function applyChartsData() {
+    const filtered = filterHistoryByRange(latestHistory, getChartRange());
+    latencyChart.setData(filtered);
+    lossChart.setData(filtered);
+    bandwidthChart.setData(filtered);
+  }
+
+  function initChartRange() {
+    const group = document.getElementById("chartRangeGroup");
+    const current = getChartRange();
+    for (const btn of group.querySelectorAll(".chart-range-btn")) {
+      btn.classList.toggle("active", btn.dataset.range === current);
+      btn.addEventListener("click", () => {
+        setChartRange(btn.dataset.range);
+        for (const b of group.querySelectorAll(".chart-range-btn")) b.classList.toggle("active", b === btn);
+        applyChartsData();
+      });
+    }
+  }
+
   let consecutiveErrors = 0;
 
   async function poll(manual = false) {
@@ -994,9 +1195,8 @@
         updateStatCards(data.current, data.stats);
         updateIssues(data.current.issues);
       }
-      latencyChart.setData(data.history);
-      lossChart.setData(data.history);
-      bandwidthChart.setData(data.history);
+      latestHistory = data.history || [];
+      applyChartsData();
       if (data.topology) {
         latestTopologyNodes = data.topology;
         if (!isDragging) renderTopology(latestTopologyNodes); // 拖曳中先不要被輪詢重繪蓋掉
@@ -1048,6 +1248,8 @@
   initTabs();
   initNodeModal();
   initRefreshInterval();
+  initTopoSearch();
+  initChartRange();
   document.getElementById("refreshBtn").addEventListener("click", () => poll(true));
 
   poll();
